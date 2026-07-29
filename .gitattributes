@@ -1,0 +1,19 @@
+# Normalizacion de fin de linea.
+# Critico: un .sh clonado con CRLF hace fallar el entrypoint del contenedor Linux.
+* text=auto eol=lf
+
+*.sh  text eol=lf
+
+# PowerShell 5.1 lee los .ps1 como ANSI si no tienen BOM: los acentos salen mal.
+# El BOM lo escribe el editor; aca solo forzamos CRLF.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binarios
+*.db   binary
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.woff binary
+*.woff2 binary

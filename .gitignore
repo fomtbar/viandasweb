@@ -32,6 +32,14 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...pero las plantillas SI se versionan.
+!.env.example
+
+# SQLite de origen para la importacion: se copia a mano, no se versiona.
+/data/*.db
+
+# Log del deploy
+deploy.log
 
 # vercel
 .vercel
@@ -39,3 +47,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Salida de Playwright
+/test-results/
+/playwright-report/

@@ -1,0 +1,132 @@
+# ==============================================================
+#  viandasWeb - compose unico (dev + prod)
+#
+#  PROFILES:
+#    app          -> la aplicacion Next.js (siempre)
+#    container-db -> SQL Server 2022 dockerizado (solo DB_MODE=container)
+#
+#  Uso:
+#    DB_MODE=container : docker compose --profile app --profile container-db up -d --build
+#    DB_MODE=external  : docker compose --profile app up -d --build
+#
+#  Requiere Docker Compose v2: el "required: false" de depends_on no existe en v1.
+# ==============================================================
+
+# OBLIGATORIO: sin esto Compose deriva el nombre de proyecto de la carpeta
+# ("infraestructura"), que colisiona con SGMIv2 -- que tambien orquesta desde
+# una carpeta "infraestructura" y tambien tiene un servicio "mssql". Sin este
+# name, un "up" desde aca recrea el contenedor de SGMIv2 y le roba su volumen.
+name: viandasweb
+
+services:
+  mssql:
+    profiles: ["container-db"]
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: viandas-mssql
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "${DB_PASSWORD}"
+      MSSQL_PID: "Developer"
+      # Acento-INSENSIBLE: sin esto, LIKE '%Adrian%' no encuentra 'Adrian' con tilde.
+      MSSQL_COLLATION: "Latin1_General_CI_AI"
+    ports:
+      - "${DB_PUERTO_HOST:-1433}:1433"
+    volumes:
+      - mssql_data:/var/opt/mssql
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/opt/mssql-tools18/bin/sqlcmd",
+          "-S",
+          "localhost",
+          "-U",
+          "sa",
+          "-P",
+          "${DB_PASSWORD}",
+          "-Q",
+          "SELECT 1",
+          "-N",
+          "-C",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 30s
+    restart: always
+    networks: [viandas-net]
+
+  # Aplica las migraciones pendientes y termina. La app no arranca hasta que
+  # este servicio salga con exito.
+  #
+  # Usa la etapa `builder` porque ahi el CLI de Prisma esta completo con todas
+  # sus dependencias; la imagen de ejecucion es deliberadamente minima y no lo
+  # incluye.
+  migrator:
+    profiles: ["app"]
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: builder
+    image: viandas/migrator:latest
+    container_name: viandas-migrator
+    command: >
+      sh -c "npx prisma migrate deploy"
+    environment:
+      DATABASE_URL: "sqlserver://${DB_HOST}:${DB_PUERTO};database=${DB_NOMBRE};user=${DB_USUARIO};password=${DB_PASSWORD};encrypt=true;trustServerCertificate=${DB_TRUST_CERT:-true};loginTimeout=20"
+    depends_on:
+      mssql:
+        condition: service_healthy
+        required: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: "no"
+    networks: [viandas-net]
+
+  app:
+    profiles: ["app"]
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_APP_NAME: "${APP_NOMBRE:-Sistema de Viandas}"
+    image: viandas/web:latest
+    container_name: viandas-web
+    ports:
+      - "${APP_PUERTO:-3100}:3000"
+    env_file: [.env]
+    environment:
+      # Prisma exige una sola URL; se compone aca desde las partes del .env.
+      # Si DB_PASSWORD tuviera ';' habria que encerrarla en llaves: password={a;b}
+      DATABASE_URL: "sqlserver://${DB_HOST}:${DB_PUERTO};database=${DB_NOMBRE};user=${DB_USUARIO};password=${DB_PASSWORD};encrypt=true;trustServerCertificate=${DB_TRUST_CERT:-true};connectionLimit=10;loginTimeout=20"
+      AUTH_SECRET: "${AUTH_SECRET}"
+      COOKIE_SECURE: "${COOKIE_SECURE:-false}"
+      BCRYPT_ROUNDS: "${BCRYPT_ROUNDS:-10}"
+      TZ: "${TZ:-America/Argentina/Buenos_Aires}"
+      NODE_ENV: production
+    depends_on:
+      mssql:
+        condition: service_healthy
+        # Clave: con DB_MODE=external el perfil container-db no se levanta
+        # y este depends_on se ignora en vez de fallar.
+        required: false
+      migrator:
+        condition: service_completed_successfully
+    extra_hosts:
+      # Permite DB_HOST=host.docker.internal apuntando a un SQL Server del host.
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: always
+    networks: [viandas-net]
+
+networks:
+  viandas-net:
+    driver: bridge
+
+volumes:
+  mssql_data:

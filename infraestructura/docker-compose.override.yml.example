@@ -1,0 +1,23 @@
+# Copiar como docker-compose.override.yml (está en .gitignore) para montar el
+# código dentro del contenedor y trabajar con recarga en caliente.
+#
+# NO es la forma recomendada de desarrollar. Conviene más:
+#   1. levantar solo la base:  docker compose --profile container-db up -d
+#   2. correr la app en el host:  npm run dev
+# Así el arranque es instantáneo y las herramientas del editor funcionan
+# contra el mismo node_modules.
+#
+# Este archivo existe para el caso en que haga falta reproducir algo que solo
+# pasa dentro del contenedor.
+
+services:
+  app:
+    build:
+      target: builder
+    command: npm run dev -- -p 3000
+    volumes:
+      - ../src:/app/src
+      - ../public:/app/public
+      - ../prisma:/app/prisma
+    environment:
+      NODE_ENV: development

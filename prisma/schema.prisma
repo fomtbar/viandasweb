@@ -1,0 +1,252 @@
+// ============================================================
+//  viandasWeb - modelo de datos (SQL Server)
+//
+//  TODAS las tablas llevan el prefijo `viandas_`.
+//
+//  No es cosmetico: en produccion la aplicacion NO tiene una base propia.
+//  Comparte una base que ya existe, con tablas de otros sistemas, y sobre la
+//  que solo hay permiso para crear tablas (no para crear la base). El prefijo
+//  es lo que garantiza que no se pise nada.
+//
+//  Los nombres de columna, en cambio, se conservan iguales a los de la app
+//  Tkinter (C:\proyectosDev\viandas) para que la importacion sea directa.
+//
+//  REGLA IMPORTANTE: onDelete/onUpdate NoAction explicito en TODAS
+//  las relaciones salvo Pedido->PedidoItem. El default de Prisma para
+//  relaciones opcionales es SetNull, que genera ON DELETE SET NULL;
+//  con Usuario->Sector y Usuario->Empleado->Sector eso son dos caminos
+//  de cascada y SQL Server aborta la migracion con
+//  "may cause cycles or multiple cascade paths".
+// ============================================================
+
+// Prisma 7: el cliente usa un driver adapter (@prisma/adapter-mssql, JS puro
+// sobre tedious) en vez del query engine nativo. Ventaja para el Dockerfile:
+// no hay binario que copiar ni binaryTargets que acertar.
+// La URL de conexion para migrate/introspect vive en prisma.config.ts, ya no
+// puede declararse aca.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlserver"
+}
+
+// ── Catalogos ────────────────────────────────────────────────
+
+model Sector {
+  id     Int     @id @default(autoincrement())
+  nombre String  @unique(map: "UQ_viandas_sectores_nombre") @db.NVarChar(120)
+  activo Boolean @default(true)
+
+  empleados       Empleado[]
+  usuariosDefault Usuario[]  @relation("SectorDefault")
+
+  @@index([activo, nombre], map: "IX_viandas_sectores_activo_nombre")
+  @@map("viandas_sectores")
+}
+
+model Cargo {
+  id          Int     @id @default(autoincrement())
+  codigo      String  @unique(map: "UQ_viandas_cargos_codigo") @db.NVarChar(30)
+  descripcion String? @db.NVarChar(120)
+  /// Determina es_gl al crear cuentas en "Sincronizar nomina".
+  esLider     Boolean @default(false) @map("es_lider")
+  activo      Boolean @default(true)
+
+  empleados Empleado[]
+
+  @@map("viandas_cargos")
+}
+
+model Turno {
+  id     Int     @id @default(autoincrement())
+  nombre String  @unique(map: "UQ_viandas_turnos_nombre") @db.NVarChar(80)
+  activo Boolean @default(true)
+
+  empleados Empleado[]
+
+  @@map("viandas_turnos")
+}
+
+/// Ventanas de overtime. Se conserva el texto original (editable por el admin)
+/// y se derivan los minutos desde medianoche para poder validar el retiro.
+/// OJO: dos de las tres ventanas reales cruzan medianoche
+/// ("23:13 A 2:34", "5:54 A 8:54"), asi que desdeMin > hastaMin es valido.
+model OvertimeVentana {
+  id           Int     @id @default(autoincrement())
+  orden        Int     @default(0)
+  otPrevio     String? @map("ot_previo") @db.NVarChar(40)
+  turnoHorario String? @map("turno_horario") @db.NVarChar(40)
+  otPosterior  String? @map("ot_posterior") @db.NVarChar(40)
+
+  /// Derivados 0..1439. NULL = el texto no pudo parsearse.
+  otPrevioDesdeMin    Int? @map("ot_previo_desde_min")
+  otPrevioHastaMin    Int? @map("ot_previo_hasta_min")
+  otPosteriorDesdeMin Int? @map("ot_posterior_desde_min")
+  otPosteriorHastaMin Int? @map("ot_posterior_hasta_min")
+
+  activo Boolean @default(true)
+
+  @@index([activo, orden], map: "IX_viandas_ot_ventanas_activo_orden")
+  @@map("viandas_overtime_ventanas")
+}
+
+// ── Nomina ───────────────────────────────────────────────────
+
+model Empleado {
+  id             Int      @id @default(autoincrement())
+  legajo         Int      @unique(map: "UQ_viandas_empleados_legajo")
+  apellidoNombre String   @map("apellido_nombre") @db.NVarChar(150)
+  cargoId        Int?     @map("cargo_id")
+  sectorId       Int?     @map("sector_id")
+  turnoId        Int?     @map("turno_id")
+  esExterno      Boolean  @default(false) @map("es_externo")
+  activo         Boolean  @default(true)
+  creadoAt       DateTime @default(now()) @map("creado_at") @db.DateTime2
+
+  cargo  Cargo?  @relation(fields: [cargoId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  sector Sector? @relation(fields: [sectorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  turno  Turno?  @relation(fields: [turnoId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  usuario            Usuario?
+  pedidosSolicitados Pedido[] @relation("PedidosSolicitados")
+  pedidosCancelados  Pedido[] @relation("PedidosCancelados")
+
+  @@index([activo, sectorId], map: "IX_viandas_empleados_activo_sector")
+  @@index([apellidoNombre], map: "IX_viandas_empleados_apellido_nombre")
+  @@map("viandas_empleados")
+}
+
+model Usuario {
+  id     Int @id @default(autoincrement())
+  legajo Int @unique(map: "UQ_viandas_usuarios_legajo")
+
+  /// bcrypt "$2b$..." son 60 chars; 72 deja aire.
+  passwordHash String @map("password_hash") @db.NVarChar(72)
+
+  /// true tras crear/resetear: fuerza el cambio en el primer ingreso.
+  debeCambiarPassword Boolean @default(true) @map("debe_cambiar_password")
+
+  /// Invalida las sesiones emitidas antes de este instante (ver lib/auth/guards).
+  passwordActualizadoAt DateTime? @map("password_actualizado_at") @db.DateTime2
+  ultimoLoginAt         DateTime? @map("ultimo_login_at") @db.DateTime2
+
+  /// Reemplaza a windows_user (no hay auto-login en web). Sirve para precargar
+  /// el CC del GL y, si algun dia hay SMTP, el remitente.
+  email String? @db.NVarChar(200)
+
+  sectorDefaultId Int?     @map("sector_default_id")
+  esAdmin         Boolean  @default(false) @map("es_admin")
+  esGl            Boolean  @default(true) @map("es_gl")
+  activo          Boolean  @default(true)
+  creadoAt        DateTime @default(now()) @map("creado_at") @db.DateTime2
+
+  empleado      Empleado @relation(fields: [legajo], references: [legajo], onDelete: NoAction, onUpdate: NoAction)
+  sectorDefault Sector?  @relation("SectorDefault", fields: [sectorDefaultId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  preferencias  UsuarioPreferencia[]
+
+  @@index([activo, esGl, esAdmin], map: "IX_viandas_usuarios_activo_roles")
+  @@map("viandas_usuarios")
+}
+
+// ── Motivos y preferencias ───────────────────────────────────
+
+model Motivo {
+  id     Int     @id @default(autoincrement())
+  texto  String  @unique(map: "UQ_viandas_motivos_texto") @db.NVarChar(200)
+  /// El combo de la pantalla principal ordena por usos DESC.
+  usos   Int     @default(0)
+  activo Boolean @default(true)
+
+  @@index([activo, usos(sort: Desc)], map: "IX_viandas_motivos_activo_usos")
+  @@map("viandas_motivos")
+}
+
+/// Preferencias globales. Quien puede editar cada clave lo decide
+/// src/lib/prefs/registro.ts en el servidor, NO la UI.
+model Preferencia {
+  clave String @id @db.NVarChar(60)
+  valor String @db.NVarChar(Max)
+
+  @@map("viandas_preferencias")
+}
+
+/// Overrides por usuario (CC propio, etc.).
+model UsuarioPreferencia {
+  usuarioId Int    @map("usuario_id")
+  clave     String @db.NVarChar(60)
+  valor     String @db.NVarChar(Max)
+
+  usuario Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([usuarioId, clave])
+  @@map("viandas_usuario_preferencias")
+}
+
+// ── Pedidos ──────────────────────────────────────────────────
+
+model Pedido {
+  id       Int      @id @default(autoincrement())
+  creadoAt DateTime @default(now()) @map("creado_at") @db.DateTime2
+
+  /// Antes NVarChar 'dd/mm/YYYY' (no ordenable). Ahora DATE real.
+  /// Construir SIEMPRE con Date.UTC(): ver lib/tiempo.ts.
+  fechaSolicitud DateTime @map("fecha_solicitud") @db.Date
+
+  /// Minutos desde medianoche (0..1439). Antes 'HH:MM' como texto.
+  retiroDesdeMin Int  @map("retiro_desde_min")
+  retiroHastaMin Int? @map("retiro_hasta_min")
+
+  solicitanteLegajo Int    @map("solicitante_legajo")
+  cantidadViandas   Int    @map("cantidad_viandas")
+  motivo            String @db.NVarChar(200)
+
+  destinatariosTo String  @map("destinatarios_to") @db.NVarChar(500)
+  destinatariosCc String? @map("destinatarios_cc") @db.NVarChar(500)
+  asunto          String  @db.NVarChar(300)
+  cuerpo          String  @db.NVarChar(Max)
+
+  /// mailto | eml | gmail | portapapeles  (validado con Zod; SQL Server no soporta enum en Prisma)
+  metodoEnvio String @default("mailto") @map("metodo_envio") @db.NVarChar(20)
+
+  /// borrador | enviado | cancelado
+  /// Arranca en 'borrador' y pasa a 'enviado' cuando el cliente confirma que
+  /// abrio el mail, asi el historial no miente si el mailto nunca se abrio.
+  estado String @default("borrador") @db.NVarChar(20)
+
+  /// Quedo registrado si el retiro cayo fuera de toda ventana de overtime.
+  fueraDeVentanaOt Boolean @default(false) @map("fuera_de_ventana_ot")
+
+  /// Auditoria de cancelacion.
+  canceladoAt        DateTime? @map("cancelado_at") @db.DateTime2
+  canceladoPorLegajo Int?      @map("cancelado_por_legajo")
+  cancelacionMotivo  String?   @map("cancelacion_motivo") @db.NVarChar(300)
+
+  solicitante  Empleado  @relation("PedidosSolicitados", fields: [solicitanteLegajo], references: [legajo], onDelete: NoAction, onUpdate: NoAction)
+  canceladoPor Empleado? @relation("PedidosCancelados", fields: [canceladoPorLegajo], references: [legajo], onDelete: NoAction, onUpdate: NoAction)
+  items        PedidoItem[]
+
+  @@index([solicitanteLegajo, creadoAt(sort: Desc)], map: "IX_viandas_pedidos_solicitante_creado")
+  @@index([creadoAt(sort: Desc)], map: "IX_viandas_pedidos_creado")
+  @@index([estado, fechaSolicitud(sort: Desc)], map: "IX_viandas_pedidos_estado_fecha")
+  @@map("viandas_pedidos")
+}
+
+/// DESNORMALIZADO A PROPOSITO: snapshot historico del nombre/sector/cargo al
+/// momento del pedido, y soporta externos sin legajo.
+/// NO agregar FK a empleados.
+model PedidoItem {
+  id             Int     @id @default(autoincrement())
+  pedidoId       Int     @map("pedido_id")
+  legajo         Int?
+  apellidoNombre String  @map("apellido_nombre") @db.NVarChar(150)
+  sectorNombre   String? @map("sector_nombre") @db.NVarChar(120)
+  cargoNombre    String? @map("cargo_nombre") @db.NVarChar(120)
+  esExterno      Boolean @default(false) @map("es_externo")
+
+  pedido Pedido @relation(fields: [pedidoId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([pedidoId], map: "IX_viandas_pedido_items_pedido")
+  @@map("viandas_pedido_items")
+}
