@@ -7,6 +7,10 @@
  *   npm run db:import -- --dry-run             # solo cuenta y valida
  *   npm run db:import -- --db ./data/otra.db
  *
+ * --truncate se lleva puesta la base entera (nomina, cuentas e historial de
+ * pedidos), asi que exige PERMITIR_DESTRUCTIVO=si en el .env -- marca que solo
+ * existe en desarrollo -- y ademas tipear el nombre de la base.
+ *
  * NO se preservan los ids originales: SET IDENTITY_INSERT es de alcance de
  * sesion y con un pool no hay garantia de que el INSERT caiga en la misma
  * conexion. Como se importa sobre una base vacia y en orden de id ascendente,
@@ -16,9 +20,11 @@
  */
 
 import path from "node:path";
+import readline from "node:readline/promises";
 import { DatabaseSync } from "node:sqlite";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
+import { exigirEntornoDestruible, destinoActual } from "@/lib/entorno";
 import {
   parseFechaDdMmYyyy,
   parseFechaHoraSqlite,
@@ -87,6 +93,38 @@ const anotar = (
 ) => reporte.push({ tabla, origen, destino, nota, desparejoEsperado });
 
 // ── Borrado previo ───────────────────────────────────────────
+
+/**
+ * Segundo cerrojo del --truncate: hay que tipear el nombre de la base.
+ *
+ * La marca de entorno sola no alcanza, porque en el equipo de desarrollo esta
+ * siempre puesta y ahi el .env se apunta a la base de la compania cada tanto.
+ * Esto obliga a leer contra que se esta por correr.
+ */
+async function confirmarNombreDeBase() {
+  const esperado = process.env.DB_NOMBRE ?? "";
+
+  if (!process.stdin.isTTY) {
+    throw new Error(
+      `--truncate necesita confirmacion interactiva y no hay terminal. ` +
+      `Destino: ${destinoActual()}`,
+    );
+  }
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    console.log(`\n  Se va a BORRAR TODO el contenido de ${destinoActual()}`);
+    console.log("  (nomina, cuentas, pedidos e historial completo)\n");
+    const respuesta = await rl.question(
+      `  Escribi el nombre de la base para confirmar (${esperado}): `,
+    );
+    if (respuesta.trim() !== esperado) {
+      throw new Error("El nombre no coincide: no se borro nada.");
+    }
+  } finally {
+    rl.close();
+  }
+}
 
 async function truncar() {
   // Orden inverso al de las FKs.
@@ -393,6 +431,10 @@ async function main() {
   }
 
   if (TRUNCAR) {
+    // --truncate vacia las 11 tablas y reinicia los IDENTITY: se lleva puesta
+    // la nomina, las cuentas y todo el historial de pedidos. Dos cerrojos.
+    exigirEntornoDestruible("vaciar la base con --truncate");
+    await confirmarNombreDeBase();
     console.log("--truncate: borrando el destino...");
     await truncar();
   } else if (await hayDatos()) {

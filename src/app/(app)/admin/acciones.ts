@@ -6,6 +6,9 @@ import { requireAdmin } from "@/lib/auth/guards";
 import { prisma } from "@/lib/prisma";
 import {
   crearCuenta,
+  crearPersona,
+  actualizarEmpleado,
+  cambiarActivoEmpleado,
   resetearPassword,
   sincronizarNomina,
   contarAdminsActivos,
@@ -194,6 +197,123 @@ export async function actualizarUsuario(entrada: unknown): Promise<Resultado> {
 
   revalidatePath("/admin/usuarios");
   return { ok: true, mensaje: "Usuario actualizado." };
+}
+
+// ── Personal (nomina) ────────────────────────────────────────
+
+/** El legajo llega de un <input type="number">: puede venir como string. */
+const Legajo = z.coerce.number().int().positive();
+/** Los <select> vacios mandan "": se normaliza a null (las FK son nullable). */
+const IdOpcional = z
+  .union([z.coerce.number().int().positive(), z.literal(""), z.null()])
+  .transform((v) => (v === "" || v === null ? null : v));
+
+const EsquemaPersona = z.object({
+  legajo: Legajo,
+  // 150 es el largo real de la columna apellido_nombre.
+  apellidoNombre: z.string().trim().min(1, "requerido").max(150),
+  sectorId: IdOpcional,
+  cargoId: IdOpcional,
+  turnoId: IdOpcional,
+  email: z.string().trim().max(200),
+  esGl: z.boolean(),
+  esAdmin: z.boolean(),
+});
+
+export async function crearPersonaAccion(entrada: unknown): Promise<Resultado> {
+  await requireAdmin();
+  const parseado = EsquemaPersona.safeParse(entrada);
+  if (!parseado.success) {
+    const primero = parseado.error.issues[0];
+    return {
+      ok: false,
+      error:
+        primero?.path[0] === "apellidoNombre"
+          ? "El apellido y nombre es obligatorio."
+          : "Datos inválidos. Revisá el legajo y los campos cargados.",
+    };
+  }
+  const datos = parseado.data;
+
+  const resultado = await crearPersona({ ...datos, email: datos.email || null });
+  if (!resultado.ok) {
+    return {
+      ok: false,
+      error:
+        resultado.motivo === "legajo-dado-de-baja"
+          ? `El legajo ${datos.legajo} ya existe pero está dado de baja. Buscalo con el filtro "Dados de baja" y reactivalo.`
+          : `El legajo ${datos.legajo} ya está en uso.`,
+    };
+  }
+
+  revalidatePath("/admin/usuarios");
+  revalidatePath("/");
+  return {
+    ok: true,
+    mensaje:
+      `${datos.apellidoNombre} quedó en la nómina. La contraseña inicial es ${datos.legajo}.` +
+      (datos.esGl || datos.esAdmin
+        ? ""
+        : " Sin rol GL ni administrador no puede iniciar sesión todavía."),
+  };
+}
+
+const EsquemaEmpleado = EsquemaPersona.pick({
+  legajo: true,
+  apellidoNombre: true,
+  sectorId: true,
+  cargoId: true,
+  turnoId: true,
+});
+
+export async function actualizarEmpleadoAccion(entrada: unknown): Promise<Resultado> {
+  await requireAdmin();
+  const parseado = EsquemaEmpleado.safeParse(entrada);
+  if (!parseado.success) {
+    return { ok: false, error: "El apellido y nombre es obligatorio." };
+  }
+  const { legajo, ...datos } = parseado.data;
+
+  if (!(await actualizarEmpleado(legajo, datos))) {
+    return { ok: false, error: "No existe un empleado con ese legajo." };
+  }
+
+  revalidatePath("/admin/usuarios");
+  // El buscador de personal de la pantalla de pedido muestra nombre y sector.
+  revalidatePath("/");
+  return { ok: true, mensaje: "Datos del empleado actualizados." };
+}
+
+export async function cambiarActivoEmpleadoAccion(
+  legajo: number,
+  activo: boolean,
+): Promise<Resultado> {
+  const admin = await requireAdmin();
+
+  if (!activo) {
+    if (legajo === admin.legajo) {
+      return { ok: false, error: "No puede darse de baja a sí mismo." };
+    }
+    // La baja arrastra la cuenta: hay que cuidar el mismo invariante que
+    // actualizarUsuario, no quedarse sin administradores.
+    const destino = await prisma.usuario.findUnique({ where: { legajo } });
+    if (destino?.esAdmin && destino.activo && (await contarAdminsActivos()) <= 1) {
+      return { ok: false, error: "Debe quedar al menos un administrador activo." };
+    }
+  }
+
+  if (!(await cambiarActivoEmpleado(legajo, activo))) {
+    return { ok: false, error: "No existe un empleado con ese legajo." };
+  }
+
+  revalidatePath("/admin/usuarios");
+  revalidatePath("/");
+  return {
+    ok: true,
+    mensaje: activo
+      ? "Empleado reactivado. Revisá su rol para darle acceso."
+      : "Empleado dado de baja. Su cuenta quedó desactivada y su historial se conserva.",
+  };
 }
 
 export async function crearUsuarioDeLegajo(legajo: number): Promise<Resultado> {

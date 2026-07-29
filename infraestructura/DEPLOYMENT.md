@@ -153,6 +153,21 @@ UPDATE viandas_usuarios SET es_admin = 1 WHERE legajo = <legajo>;
 base que ya tiene la nómina, saltear este paso: el script aborta solo al
 detectar datos, pero no hay motivo para correrlo.
 
+De ahí en adelante el personal se administra desde la aplicación, en
+**Admin → Usuarios**: alta de personas nuevas, corrección de nombre, sector,
+cargo y turno, y baja cuando alguien deja la planta. El importador no se vuelve
+a usar.
+
+### Operaciones que borran datos
+
+`--truncate` vacía las once tablas y reinicia los IDENTITY: se lleva puesta la
+nómina, las cuentas y todo el historial de pedidos. Igual que las pruebas e2e,
+exige `PERMITIR_DESTRUCTIVO=si` en el `.env` y aborta sin esa marca, además de
+pedir que se tipee el nombre de la base.
+
+**Esa marca no va en el servidor.** Es lo único que separa a la base de
+producción de un borrado accidental.
+
 ## Checklist del servidor
 
 Con la base de la compañía **ya migrada y con la nómina cargada** (hecho desde

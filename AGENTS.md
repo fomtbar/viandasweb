@@ -73,6 +73,36 @@ el despliegue.
   parcial e insensible a mayúsculas.** Varias pruebas fallaron por eso; usar
   `exact: true` o los `data-testid` de las filas.
 
+## Nómina y cuentas son dos cosas distintas
+
+- `viandas_empleados` es la **nómina**: quien esté ahí aparece en el buscador
+  de personal y se le puede pedir una vianda.
+- `viandas_usuarios` es el **registro de cuenta**: contraseña y roles.
+
+El alta de personal (`crearPersona`) crea **siempre las dos**, tenga rol o no.
+El acceso lo decide `tieneAcceso()` = `activo && (esGl || esAdmin)`, así que
+alguien sin rol queda en la nómina pero no inicia sesión; cuando más adelante
+se lo marca GL, ya tiene con qué entrar.
+
+Por eso la grilla de `/admin/usuarios` lista **empleados**, no usuarios, e
+incluye a los dados de baja: si filtrara por activo, un empleado desactivado
+desaparecería y no habría forma de reactivarlo.
+
+"Crear cuentas faltantes" (antes "Sincronizar nómina") **no importa nada de
+ninguna fuente externa**: le crea la cuenta a los empleados activos que no la
+tengan. Con el alta creando siempre las dos, casi siempre va a dar cero.
+
+## Operaciones destructivas: `PERMITIR_DESTRUCTIVO`
+
+`db:import --truncate` y las pruebas e2e escriben y borran. Las dos exigen
+`PERMITIR_DESTRUCTIVO=si` en el `.env` y abortan sin esa marca
+(`src/lib/entorno.ts`). Es **fail-closed** a propósito: olvidarse de declararla
+bloquea, nunca al revés. La marca va solo en desarrollo; en el servidor no
+existe.
+
+Si `npm run e2e` corta antes del primer test, es esto: el `.env` está apuntando
+a la base de la compañía.
+
 ## Reglas de negocio heredadas que no se pueden "arreglar"
 
 - Al escribir en el buscador de personal, **el filtro de sector se ignora** y

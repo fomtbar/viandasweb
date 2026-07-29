@@ -51,7 +51,13 @@ test.afterAll(async () => {
     });
   }
   await prisma.motivo.deleteMany({ where: { texto: { startsWith: "E2E " } } });
-  await prisma.usuarioPreferencia.deleteMany();
+
+  // Acotado a los dos usuarios de prueba: sin el where, esto borraba las
+  // preferencias de TODA la nomina. Contra la base real eso es configuracion
+  // de gente que no tiene nada que ver con las pruebas.
+  await prisma.usuarioPreferencia.deleteMany({
+    where: { usuario: { legajo: { in: [ADMIN, GL] } } },
+  });
   await prisma.$disconnect();
 });
 
