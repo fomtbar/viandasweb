@@ -226,6 +226,41 @@ if [[ "$DB_MODE" == "external" ]]; then
        Si corre en otra máquina, usá su IP o su nombre de red."
     fi
     gris "Destino: ${DB_HOST_ENV}:${DB_PUERTO_ENV}/${DB_NOMBRE_ENV} (base existente, no se crea)"
+
+    # Alcance desde el host. Sin esto, un puerto mal puesto en el .env recién se
+    # descubre dentro del migrator, con un P1001 mucho menos explícito.
+    if (echo >"/dev/tcp/${DB_HOST_ENV}/${DB_PUERTO_ENV}") 2>/dev/null; then
+        verde "  El host llega a ${DB_HOST_ENV}:${DB_PUERTO_ENV}"
+    else
+        morir "No hay TCP a ${DB_HOST_ENV}:${DB_PUERTO_ENV} desde este equipo.
+       Revisá el puerto (SQL Server suele escuchar en 1433; 14330 es el del
+       contenedor de desarrollo), el firewall y que la instancia acepte TCP/IP."
+    fi
+
+    # Alcance desde un contenedor. El host puede llegar y el contenedor no: pasa
+    # cuando la subred de Docker se superpone con la de la base. Docker usa
+    # 172.17.0.0/16 para docker0 y reparte 172.17-172.31 entre las redes de los
+    # proyectos; si la base vive en ese rango, la VM de Docker cree que la IP es
+    # local a su propio bridge y nunca la rutea a la red. El síntoma es un
+    # P1001 dentro del migrator con la base perfectamente accesible desde afuera.
+    if docker run --rm --quiet busybox true >/dev/null 2>&1; then
+        if docker run --rm busybox timeout 5 nc -z "$DB_HOST_ENV" "$DB_PUERTO_ENV" >/dev/null 2>&1; then
+            verde "  Un contenedor también llega a ${DB_HOST_ENV}:${DB_PUERTO_ENV}"
+        else
+            rojo "  El host llega pero un contenedor NO."
+            rojo "  Casi seguro: la subred de Docker se superpone con la de la base."
+            rojo "  Comprobalo con:"
+            rojo "      docker run --rm --network host busybox ip route"
+            rojo "  Si ves una ruta que contiene a ${DB_HOST_ENV} (p. ej. 172.17.0.0/16"
+            rojo "  en docker0), mové Docker fuera de ese rango. En daemon.json:"
+            rojo '      "bip": "10.99.0.1/24",'
+            rojo '      "default-address-pools": [ { "base": "10.100.0.0/16", "size": 24 } ]'
+            rojo "  y reiniciá Docker. Ver infraestructura/DEPLOYMENT.md."
+            morir "El contenedor no alcanza la base; el despliegue fallaría igual, pero más tarde."
+        fi
+    else
+        gris "  (sin imagen busybox a mano: se omite la prueba desde el contenedor)"
+    fi
 fi
 
 # ── [2] Contenedores ─────────────────────────────────────────
@@ -233,7 +268,12 @@ paso 2 "Construyendo y levantando"
 cd "$INFRA"
 # El migrator corre solo y termina; la app espera a que salga bien.
 # Solo crea/actualiza las tablas viandas_*; no toca nada mas de la base.
-docker compose "${PERFILES[@]}" up -d --build
+#
+# --force-recreate NO es opcional: sin el, cuando el contenedor de la app ya
+# esta corriendo, compose reconstruye la imagen pero deja el contenedor viejo
+# en pie ("Running" en vez de "Recreated") y el despliegue termina en verde
+# sirviendo el codigo anterior. Ya paso.
+docker compose "${PERFILES[@]}" up -d --build --force-recreate
 
 # ── [3] Salud ────────────────────────────────────────────────
 esperar_sano() {

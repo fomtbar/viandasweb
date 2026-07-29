@@ -107,6 +107,32 @@ export function hoyEnZona(
   return new Date(Date.UTC(valor("year"), valor("month") - 1, valor("day")));
 }
 
+/**
+ * Instante (creado_at, cancelado_at, ultimo_login_at) -> 'dd/mm/YYYY HH:MM'
+ * en la zona de la planta.
+ *
+ * NO usar formatearFechaDdMmYyyy() para esto: esa lee los componentes en UTC
+ * porque esta pensada para las columnas @db.Date, que se guardan como
+ * UTC-medianoche. Aplicada a un instante, a partir de las 21:00 de Argentina
+ * devuelve el dia siguiente.
+ */
+export function formatearFechaHoraEnZona(
+  instante: Date,
+  zona = process.env.TZ || "America/Argentina/Buenos_Aires",
+): string {
+  const partes = new Intl.DateTimeFormat("es-AR", {
+    timeZone: zona,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(instante);
+  const v = (tipo: string) => partes.find((p) => p.type === tipo)?.value ?? "";
+  return `${v("day")}/${v("month")}/${v("year")} ${v("hour")}:${v("minute")}`;
+}
+
 /** Fecha y hora de SQLite ('YYYY-MM-DD HH:MM:SS', que es UTC) -> Date. */
 export function parseFechaHoraSqlite(texto: string): Date {
   return new Date(`${texto.replace(" ", "T")}Z`);

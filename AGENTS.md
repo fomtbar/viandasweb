@@ -47,6 +47,28 @@ el despliegue.
   final él mismo en vez de delegarlo.
 - **La imagen de ejecución no lleva el CLI de Prisma.** Migra el servicio
   `migrator` del compose, que usa la etapa `builder`.
+- **La subred de Docker no puede pisar la de la base.** Docker reparte
+  `172.17.0.0/12` entre sus redes y la LAN de la compañía es `172.17.x.x`: la
+  VM de Docker toma la IP de la base por local a `docker0` y no la rutea. El
+  host llega y el contenedor no. Se arregla con `bip` +
+  `default-address-pools` en `daemon.json`. Lo detecta el paso `[1b]` del
+  deploy; el detalle está en `infraestructura/DEPLOYMENT.md`.
+- **`prisma migrate dev` y `prisma migrate diff` son peligrosos contra la base
+  de producción**: es compartida con otro sistema, y Prisma genera `DROP TABLE`
+  para toda tabla que no esté en el schema. Ya propuso borrar `sysdiagrams`.
+  Revisar el SQL generado antes de aplicarlo, siempre.
+- **La base de producción está *baselineada*.** Como no estaba vacía, la
+  migración inicial se aplicó con `db execute` + `migrate resolve --applied` en
+  vez de `migrate deploy`. De ahí en adelante el flujo es el normal.
+- **`docker compose up -d --build` no recrea el contenedor** si ya está
+  corriendo: reconstruye la imagen y deja el contenedor viejo sirviendo el
+  código anterior, con el despliegue en verde. Por eso `deploy.sh` y
+  `deploy.ps1` usan `--force-recreate`.
+- **Los `ALTER COLUMN` de SQL Server chocan con los índices y los `DEFAULT`**
+  que cuelgan de la columna (error 5074). `prisma migrate diff` contempla los
+  índices pero **no** los defaults: hay que agregar a mano el `DROP CONSTRAINT`
+  y volver a crearlo. Ver
+  `prisma/migrations/20260729103500_timestamps_con_offset`.
 - **`getByText` y `getByRole(..., {name})` de Playwright hacen coincidencia
   parcial e insensible a mayúsculas.** Varias pruebas fallaron por eso; usar
   `exact: true` o los `data-testid` de las filas.
@@ -65,6 +87,26 @@ el despliegue.
 - **Dos de las tres ventanas de overtime cruzan la medianoche.** Cualquier
   cambio en la comparación de rangos debe seguir pasando
   `src/lib/overtime/overtime.test.ts`.
+
+## Fechas: dos tipos de columna que no se mezclan
+
+- **Los instantes** (`creado_at`, `cancelado_at`, `ultimo_login_at`,
+  `password_actualizado_at`) son `DATETIMEOFFSET` y se guardan en UTC, con
+  `+00:00` explícito. Se muestran con `formatearFechaHoraEnZona()`.
+- **Las fechas sin hora** (`fecha_solicitud`) son `DATE` y se construyen
+  **siempre** con `Date.UTC()`, porque `useUTC: true` en el adaptador las
+  correría un día. Se muestran con `formatearFechaDdMmYyyy()`, que lee los
+  componentes en UTC.
+
+Usar el formateador equivocado no rompe nada visible hasta las 21:00 de
+Argentina, cuando el UTC ya es el día siguiente y las fechas empiezan a
+mostrarse corridas. Ya pasó en el detalle del historial.
+
+Para leer un instante desde SSMS en hora local:
+
+```sql
+SELECT creado_at AT TIME ZONE 'Argentina Standard Time' FROM viandas_pedidos;
+```
 
 ## Verificación
 

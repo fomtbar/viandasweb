@@ -213,11 +213,71 @@ else {
     finally { Pop-Location }
 }
 
+# ── [1b] Comprobación previa de la base ──────────────────────
+# En producción la base YA EXISTE, es compartida con otros sistemas y solo hay
+# permiso para crear tablas. Si no se llega, conviene enterarse acá y no dentro
+# del contenedor, donde el error es un P1001 mucho menos explícito.
+if ($DbMode -eq "external") {
+    Paso "1b" "Comprobando el acceso a la base"
+    $DbHostEnv = Read-Env "DB_HOST"
+    $DbPuertoEnv = Read-Env "DB_PUERTO"
+    $DbNombreEnv = Read-Env "DB_NOMBRE"
+
+    if ($DbHostEnv -eq "localhost" -or $DbHostEnv -eq "127.0.0.1") {
+        Morir "DB_HOST=$DbHostEnv no sirve: desde adentro del contenedor apunta al contenedor mismo.
+       Si SQL Server corre en este mismo servidor, usá  host.docker.internal
+       Si corre en otra máquina, usá su IP o su nombre de red."
+    }
+    Escribir "  Destino: ${DbHostEnv}:${DbPuertoEnv}/${DbNombreEnv} (base existente, no se crea)"
+
+    # Alcance desde el host.
+    if (Test-NetConnection -ComputerName $DbHostEnv -Port $DbPuertoEnv -InformationLevel Quiet -WarningAction SilentlyContinue) {
+        Verde "El host llega a ${DbHostEnv}:${DbPuertoEnv}"
+    }
+    else {
+        Morir "No hay TCP a ${DbHostEnv}:${DbPuertoEnv} desde este equipo.
+       Revisá el puerto (SQL Server suele escuchar en 1433; 14330 es el del
+       contenedor de desarrollo), el firewall y que la instancia acepte TCP/IP."
+    }
+
+    # Alcance desde un contenedor. El host puede llegar y el contenedor no: pasa
+    # cuando la subred de Docker se superpone con la de la base. Docker usa
+    # 172.17.0.0/16 para docker0 y reparte 172.17-172.31 entre las redes de los
+    # proyectos; si la base vive en ese rango, la VM de Docker cree que la IP es
+    # local a su propio bridge y nunca la rutea a la red.
+    & docker run --rm --quiet busybox true 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        & docker run --rm busybox timeout 5 nc -z $DbHostEnv $DbPuertoEnv 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Verde "Un contenedor también llega a ${DbHostEnv}:${DbPuertoEnv}"
+        }
+        else {
+            Rojo "El host llega pero un contenedor NO."
+            Rojo "Casi seguro: la subred de Docker se superpone con la de la base."
+            Rojo "Comprobalo con:"
+            Rojo "    docker run --rm --network host busybox ip route"
+            Rojo "Si ves una ruta que contiene a $DbHostEnv (p. ej. 172.17.0.0/16"
+            Rojo "en docker0), mové Docker fuera de ese rango. En daemon.json:"
+            Rojo '    "bip": "10.99.0.1/24",'
+            Rojo '    "default-address-pools": [ { "base": "10.100.0.0/16", "size": 24 } ]'
+            Rojo "y reiniciá Docker. Ver infraestructura/DEPLOYMENT.md."
+            Morir "El contenedor no alcanza la base; el despliegue fallaría igual, pero más tarde."
+        }
+    }
+    else {
+        Escribir "  (sin imagen busybox a mano: se omite la prueba desde el contenedor)"
+    }
+}
+
 # ── [2] Contenedores ─────────────────────────────────────────
 Paso 2 "Construyendo y levantando"
 Push-Location $Infra
 try {
-    & docker compose @Perfiles up -d --build
+    # --force-recreate NO es opcional: sin el, cuando el contenedor de la app ya
+    # esta corriendo, compose reconstruye la imagen pero deja el contenedor
+    # viejo en pie ("Running" en vez de "Recreated") y el despliegue termina en
+    # verde sirviendo el codigo anterior. Ya paso.
+    & docker compose @Perfiles up -d --build --force-recreate
     if ($LASTEXITCODE -ne 0) { Morir "Falló el levantamiento de los contenedores." }
 }
 finally { Pop-Location }

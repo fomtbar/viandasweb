@@ -5,7 +5,11 @@ import { obtenerPedidoParaUsuario } from "@/server/pedidos";
 import { Alerta, Boton, Panel } from "@/components/ui";
 import { EstadoPedido } from "@/components/historial/EstadoPedido";
 import { BotonCancelar } from "@/components/historial/BotonCancelar";
-import { formatearFechaDdMmYyyy, minutosAHhmm } from "@/lib/tiempo";
+import {
+  formatearFechaDdMmYyyy,
+  formatearFechaHoraEnZona,
+  minutosAHhmm,
+} from "@/lib/tiempo";
 
 export const dynamic = "force-dynamic";
 
@@ -47,9 +51,7 @@ export default async function PaginaDetallePedido({
             ? `Cancelado por ${pedido.canceladoPor.apellidoNombre}`
             : "Cancelado"}
           {pedido.canceladoAt &&
-            ` el ${formatearFechaDdMmYyyy(pedido.canceladoAt)} a las ${String(
-              pedido.canceladoAt.getHours(),
-            ).padStart(2, "0")}:${String(pedido.canceladoAt.getMinutes()).padStart(2, "0")}`}
+            ` el ${formatearFechaHoraEnZona(pedido.canceladoAt)}`}
           .
           {pedido.cancelacionMotivo && ` Motivo: ${pedido.cancelacionMotivo}`}
         </Alerta>

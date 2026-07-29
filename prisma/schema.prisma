@@ -103,7 +103,7 @@ model Empleado {
   turnoId        Int?     @map("turno_id")
   esExterno      Boolean  @default(false) @map("es_externo")
   activo         Boolean  @default(true)
-  creadoAt       DateTime @default(now()) @map("creado_at") @db.DateTime2
+  creadoAt       DateTime @default(now()) @map("creado_at") @db.DateTimeOffset
 
   cargo  Cargo?  @relation(fields: [cargoId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   sector Sector? @relation(fields: [sectorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -129,8 +129,8 @@ model Usuario {
   debeCambiarPassword Boolean @default(true) @map("debe_cambiar_password")
 
   /// Invalida las sesiones emitidas antes de este instante (ver lib/auth/guards).
-  passwordActualizadoAt DateTime? @map("password_actualizado_at") @db.DateTime2
-  ultimoLoginAt         DateTime? @map("ultimo_login_at") @db.DateTime2
+  passwordActualizadoAt DateTime? @map("password_actualizado_at") @db.DateTimeOffset
+  ultimoLoginAt         DateTime? @map("ultimo_login_at") @db.DateTimeOffset
 
   /// Reemplaza a windows_user (no hay auto-login en web). Sirve para precargar
   /// el CC del GL y, si algun dia hay SMTP, el remitente.
@@ -140,7 +140,7 @@ model Usuario {
   esAdmin         Boolean  @default(false) @map("es_admin")
   esGl            Boolean  @default(true) @map("es_gl")
   activo          Boolean  @default(true)
-  creadoAt        DateTime @default(now()) @map("creado_at") @db.DateTime2
+  creadoAt        DateTime @default(now()) @map("creado_at") @db.DateTimeOffset
 
   empleado      Empleado @relation(fields: [legajo], references: [legajo], onDelete: NoAction, onUpdate: NoAction)
   sectorDefault Sector?  @relation("SectorDefault", fields: [sectorDefaultId], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -188,7 +188,7 @@ model UsuarioPreferencia {
 
 model Pedido {
   id       Int      @id @default(autoincrement())
-  creadoAt DateTime @default(now()) @map("creado_at") @db.DateTime2
+  creadoAt DateTime @default(now()) @map("creado_at") @db.DateTimeOffset
 
   /// Antes NVarChar 'dd/mm/YYYY' (no ordenable). Ahora DATE real.
   /// Construir SIEMPRE con Date.UTC(): ver lib/tiempo.ts.
@@ -219,7 +219,7 @@ model Pedido {
   fueraDeVentanaOt Boolean @default(false) @map("fuera_de_ventana_ot")
 
   /// Auditoria de cancelacion.
-  canceladoAt        DateTime? @map("cancelado_at") @db.DateTime2
+  canceladoAt        DateTime? @map("cancelado_at") @db.DateTimeOffset
   canceladoPorLegajo Int?      @map("cancelado_por_legajo")
   cancelacionMotivo  String?   @map("cancelacion_motivo") @db.NVarChar(300)
 
