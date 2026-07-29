@@ -43,6 +43,31 @@ export async function actualizarSector(
   return { ok: true, mensaje: "Sector actualizado." };
 }
 
+export async function crearSector(nombre: string): Promise<Resultado> {
+  await requireAdmin();
+  const limpio = nombre.trim();
+  if (!limpio) return { ok: false, error: "El nombre no puede quedar vacío." };
+  // 120 es el largo real de la columna.
+  if (limpio.length > 120) {
+    return { ok: false, error: "El nombre no puede superar los 120 caracteres." };
+  }
+
+  const repetido = await prisma.sector.findFirst({ where: { nombre: limpio } });
+  if (repetido) {
+    return repetido.activo
+      ? { ok: false, error: "Ya existe un sector con ese nombre." }
+      : {
+          ok: false,
+          error: `Ya existe un sector "${limpio}" pero está inactivo. Buscalo en la lista y volvé a marcarlo como activo.`,
+        };
+  }
+
+  await prisma.sector.create({ data: { nombre: limpio, activo: true } });
+  revalidatePath("/admin/sectores");
+  revalidatePath("/");
+  return { ok: true, mensaje: `Sector "${limpio}" creado.` };
+}
+
 export async function actualizarCargo(
   id: number,
   descripcion: string,
@@ -59,6 +84,40 @@ export async function actualizarCargo(
   // a las cuentas que se creen desde ahora. Es el mismo comportamiento que la
   // app Tkinter.
   return { ok: true, mensaje: "Cargo actualizado. Afecta a las cuentas nuevas." };
+}
+
+export async function crearCargo(
+  codigo: string,
+  descripcion: string,
+  esLider: boolean,
+): Promise<Resultado> {
+  await requireAdmin();
+  // El codigo es la clave del catalogo y despues NO se edita, igual que en las
+  // filas existentes: por eso se valida con cuidado acá.
+  const cod = codigo.trim().toUpperCase();
+  if (!cod) return { ok: false, error: "El código es obligatorio." };
+  if (cod.length > 30) {
+    return { ok: false, error: "El código no puede superar los 30 caracteres." };
+  }
+
+  const repetido = await prisma.cargo.findUnique({ where: { codigo: cod } });
+  if (repetido) return { ok: false, error: `Ya existe el cargo ${cod}.` };
+
+  await prisma.cargo.create({
+    data: {
+      codigo: cod,
+      descripcion: descripcion.trim() || null,
+      esLider,
+      activo: true,
+    },
+  });
+  revalidatePath("/admin/cargos");
+  return {
+    ok: true,
+    mensaje: esLider
+      ? `Cargo ${cod} creado. Las cuentas nuevas con este cargo van a ser GL.`
+      : `Cargo ${cod} creado.`,
+  };
 }
 
 export async function actualizarMotivo(id: number, texto: string): Promise<Resultado> {
@@ -147,6 +206,53 @@ export async function actualizarVentanaOt(entrada: unknown): Promise<Resultado> 
     mensaje: ilegibles.length
       ? `Guardado, pero no se entendió el horario de ${ilegibles.join(" ni ")}. Use el formato "6:00 A 14:34".`
       : "Ventana actualizada.",
+  };
+}
+
+export async function crearVentanaOt(entrada: unknown): Promise<Resultado> {
+  await requireAdmin();
+  const parseado = EsquemaVentana.omit({ id: true, activo: true }).safeParse(entrada);
+  if (!parseado.success) return { ok: false, error: "Datos inválidos." };
+  const v = parseado.data;
+
+  if (!v.otPrevio.trim() && !v.otPosterior.trim()) {
+    return {
+      ok: false,
+      error: "Cargue al menos un horario de OT previo o posterior; si no, la ventana no valida nada.",
+    };
+  }
+
+  // Mismo criterio que actualizarVentanaOt: los minutos se derivan del texto y
+  // quedan en null si no se entiende, con lo cual esa franja deja de validar.
+  const previo = parseRangoHorario(v.otPrevio);
+  const posterior = parseRangoHorario(v.otPosterior);
+
+  await prisma.overtimeVentana.create({
+    data: {
+      orden: v.orden,
+      otPrevio: v.otPrevio.trim() || null,
+      turnoHorario: v.turnoHorario.trim() || null,
+      otPosterior: v.otPosterior.trim() || null,
+      otPrevioDesdeMin: previo?.desdeMin ?? null,
+      otPrevioHastaMin: previo?.hastaMin ?? null,
+      otPosteriorDesdeMin: posterior?.desdeMin ?? null,
+      otPosteriorHastaMin: posterior?.hastaMin ?? null,
+      activo: true,
+    },
+  });
+
+  revalidatePath("/admin/overtime");
+  revalidatePath("/");
+
+  const ilegibles: string[] = [];
+  if (v.otPrevio.trim() && !previo) ilegibles.push("OT previo");
+  if (v.otPosterior.trim() && !posterior) ilegibles.push("OT posterior");
+
+  return {
+    ok: true,
+    mensaje: ilegibles.length
+      ? `Ventana creada, pero no se entendió el horario de ${ilegibles.join(" ni ")}. Use el formato "6:00 A 14:34".`
+      : "Ventana creada.",
   };
 }
 

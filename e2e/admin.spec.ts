@@ -23,6 +23,12 @@ const ADMIN = 5169;
 const GL = 132;
 const CLAVE = "viandas-e2e-2026";
 
+/** Altas de catálogo que crean las pruebas. Se limpian en el afterAll. */
+const SECTOR_E2E = "E2E SECTOR NUEVO";
+const CARGO_E2E = "E2ECARGO";
+const TURNO_E2E = "E2E TURNO";
+const ORDEN_E2E = 99;
+
 test.beforeAll(async () => {
   for (const legajo of [ADMIN, GL]) {
     await prisma.usuario.update({
@@ -58,6 +64,13 @@ test.afterAll(async () => {
   await prisma.usuarioPreferencia.deleteMany({
     where: { usuario: { legajo: { in: [ADMIN, GL] } } },
   });
+
+  // Altas de catálogo de las pruebas. Se borran de verdad y no se desactivan
+  // porque nada las referencia: se crearon acá y no se les asignó nadie.
+  await prisma.sector.deleteMany({ where: { nombre: SECTOR_E2E } });
+  await prisma.cargo.deleteMany({ where: { codigo: CARGO_E2E } });
+  await prisma.overtimeVentana.deleteMany({ where: { turnoHorario: TURNO_E2E } });
+
   await prisma.$disconnect();
 });
 
@@ -154,14 +167,16 @@ test("el admin edita las preferencias generales y avisa por marcadores inválido
   });
 });
 
-test("sincronizar nómina informa que ya está completa", async ({ page }) => {
+test("crear cuentas faltantes informa que la nómina ya está completa", async ({
+  page,
+}) => {
   await ingresar(page, ADMIN);
   await page.goto("/admin/usuarios");
 
-  await page.getByRole("button", { name: "Sincronizar nómina" }).click();
+  await page.getByRole("button", { name: "Crear cuentas faltantes" }).click();
   await expect(
     page.getByTestId("alerta").filter({ hasText: "ya tiene cuenta" }),
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 60_000 });
 });
 
 test("un admin no puede quitarse a sí mismo el rol ni desactivarse", async ({ page }) => {
@@ -227,7 +242,12 @@ test("el admin crea y elimina un motivo", async ({ page }) => {
   const fila = page.getByTestId(`motivo-${creado!.id}`);
   page.once("dialog", (d) => d.accept());
   await fila.getByRole("button", { name: "Eliminar" }).click();
-  await expect(page.getByText("Motivo eliminado")).toBeVisible();
+  // Al testid del panel: hasta que el refresh desmonta la fila, el mismo texto
+  // esta dos veces (el aviso del boton y el del encabezado) y sin acotar el
+  // localizador Playwright corta por strict mode.
+  await expect(
+    page.getByTestId("alerta").filter({ hasText: "Motivo eliminado" }),
+  ).toBeVisible();
 
   expect(
     await prisma.motivo.findUnique({ where: { texto: "E2E MOTIVO NUEVO" } }),
@@ -266,4 +286,77 @@ test("editar una ventana de overtime cambia la validación del retiro", async ({
       otPrevioHastaMin: original!.otPrevioHastaMin,
     },
   });
+});
+
+test("el admin crea un sector y aparece en la pantalla de pedido", async ({ page }) => {
+  await ingresar(page, ADMIN);
+  await page.goto("/admin/sectores");
+
+  await page.getByLabel("Agregar sector").fill(SECTOR_E2E);
+  await page.getByRole("button", { name: "Agregar", exact: true }).click();
+  await expect(
+    page.getByTestId("alerta").filter({ hasText: "creado" }),
+  ).toBeVisible({ timeout: 60_000 });
+
+  const creado = await prisma.sector.findFirst({ where: { nombre: SECTOR_E2E } });
+  expect(creado).not.toBeNull();
+  expect(creado!.activo).toBe(true);
+
+  // Repetirlo no crea un duplicado.
+  await page.getByLabel("Agregar sector").fill(SECTOR_E2E);
+  await page.getByRole("button", { name: "Agregar", exact: true }).click();
+  await expect(
+    page.getByTestId("alerta").filter({ hasText: "Ya existe un sector" }),
+  ).toBeVisible({ timeout: 60_000 });
+  expect(await prisma.sector.count({ where: { nombre: SECTOR_E2E } })).toBe(1);
+
+  // Y queda disponible en el filtro de sector de la pantalla de pedido.
+  await page.goto("/");
+  await expect(page.locator("#filtro-sector")).toContainText(SECTOR_E2E);
+});
+
+test("el admin crea un cargo y el código queda en mayúsculas", async ({ page }) => {
+  await ingresar(page, ADMIN);
+  await page.goto("/admin/cargos");
+
+  // exact en los tres: sin el, "Descripción" tambien matchea los
+  // "Descripción de ANALYST" de cada fila y "Es líder" los de la grilla.
+  // Se escribe en minuscula a proposito: el servidor lo normaliza.
+  await page.getByLabel("Código", { exact: true }).fill(CARGO_E2E.toLowerCase());
+  await page.getByLabel("Descripción", { exact: true }).fill("Cargo de prueba E2E");
+  await page.getByLabel("Es líder", { exact: true }).check();
+  await page.getByRole("button", { name: "Agregar", exact: true }).click();
+  await expect(
+    page.getByTestId("alerta").filter({ hasText: "creado" }),
+  ).toBeVisible({ timeout: 60_000 });
+
+  const creado = await prisma.cargo.findUnique({ where: { codigo: CARGO_E2E } });
+  expect(creado).not.toBeNull();
+  expect(creado!.esLider).toBe(true);
+  expect(creado!.activo).toBe(true);
+
+  await expect(page.getByTestId(`cargo-${CARGO_E2E}`)).toBeVisible();
+});
+
+test("el admin crea una ventana de overtime y se le derivan los minutos", async ({
+  page,
+}) => {
+  await ingresar(page, ADMIN);
+  await page.goto("/admin/overtime");
+
+  await page.getByLabel("Orden", { exact: true }).fill(String(ORDEN_E2E));
+  await page.getByLabel("OT previo", { exact: true }).fill("3:15 A 5:45");
+  await page.getByLabel("Horario del turno", { exact: true }).fill(TURNO_E2E);
+  await page.getByRole("button", { name: "Agregar ventana" }).click();
+  await expect(
+    page.getByTestId("alerta").filter({ hasText: "Ventana creada" }),
+  ).toBeVisible({ timeout: 60_000 });
+
+  const creada = await prisma.overtimeVentana.findFirst({
+    where: { turnoHorario: TURNO_E2E },
+  });
+  expect(creada).not.toBeNull();
+  // El texto se convierte a minutos desde medianoche: 3:15 = 195, 5:45 = 345.
+  expect(creada!.otPrevioDesdeMin).toBe(195);
+  expect(creada!.otPrevioHastaMin).toBe(345);
 });

@@ -1,9 +1,18 @@
 "use client";
 
-import { useState } from "react";
-import { Alerta, Entrada } from "@/components/ui";
-import { TablaCatalogo, BotonFila } from "@/components/admin/TablaCatalogo";
-import { actualizarVentanaOt } from "@/app/(app)/admin/acciones";
+import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
+import { Alerta, Boton, Entrada } from "@/components/ui";
+import {
+  TablaCatalogo,
+  BotonFila,
+  AvisoOperacion,
+} from "@/components/admin/TablaCatalogo";
+import {
+  actualizarVentanaOt,
+  crearVentanaOt,
+  type Resultado,
+} from "@/app/(app)/admin/acciones";
 
 interface Ventana {
   id: number;
@@ -36,6 +45,32 @@ export function TablaOvertime({
   ventanas: Ventana[];
   modo: string;
 }) {
+  const vacia = { orden: "", otPrevio: "", turnoHorario: "", otPosterior: "" };
+  const [nueva, setNueva] = useState(vacia);
+  const [estado, setEstado] = useState<Resultado | null>(null);
+  const [procesando, iniciar] = useTransition();
+  const router = useRouter();
+
+  function cambiar(campo: keyof typeof vacia, valor: string) {
+    setNueva((n) => ({ ...n, [campo]: valor }));
+  }
+
+  function agregar() {
+    iniciar(async () => {
+      const resultado = await crearVentanaOt({
+        orden: Number(nueva.orden) || 0,
+        otPrevio: nueva.otPrevio,
+        turnoHorario: nueva.turnoHorario,
+        otPosterior: nueva.otPosterior,
+      });
+      setEstado(resultado);
+      if (resultado.ok) {
+        setNueva(vacia);
+        router.refresh();
+      }
+    });
+  }
+
   return (
     <TablaCatalogo
       columnas={["Orden", "OT previo", "Horario del turno", "OT posterior", "Activa", ""]}
@@ -51,6 +86,44 @@ export function TablaOvertime({
             Hoy la validación está <strong>{MODOS[modo] ?? modo}</strong>. Se
             cambia en Preferencias.
           </Alerta>
+
+          <div className="flex flex-wrap items-end gap-2">
+            <CampoAlta
+              id="ventana-orden"
+              etiqueta="Orden"
+              ancho="w-24"
+              valor={nueva.orden}
+              onChange={(v) => cambiar("orden", v)}
+            />
+            <CampoAlta
+              id="ventana-previo"
+              etiqueta="OT previo"
+              valor={nueva.otPrevio}
+              onChange={(v) => cambiar("otPrevio", v)}
+            />
+            <CampoAlta
+              id="ventana-turno"
+              etiqueta="Horario del turno"
+              valor={nueva.turnoHorario}
+              onChange={(v) => cambiar("turnoHorario", v)}
+            />
+            <CampoAlta
+              id="ventana-posterior"
+              etiqueta="OT posterior"
+              valor={nueva.otPosterior}
+              onChange={(v) => cambiar("otPosterior", v)}
+            />
+            <Boton
+              onClick={agregar}
+              disabled={
+                procesando ||
+                (!nueva.otPrevio.trim() && !nueva.otPosterior.trim())
+              }
+            >
+              {procesando ? "Agregando…" : "Agregar ventana"}
+            </Boton>
+          </div>
+          <AvisoOperacion estado={estado} />
         </div>
       }
     >
@@ -58,6 +131,39 @@ export function TablaOvertime({
         <Fila key={v.id} ventana={v} />
       ))}
     </TablaCatalogo>
+  );
+}
+
+/** Campo del formulario de alta. Son cuatro y todos se ven igual. */
+function CampoAlta({
+  id,
+  etiqueta,
+  valor,
+  onChange,
+  ancho = "min-w-40 flex-1",
+}: {
+  id: string;
+  etiqueta: string;
+  valor: string;
+  onChange: (valor: string) => void;
+  ancho?: string;
+}) {
+  return (
+    <div className={ancho}>
+      <label
+        htmlFor={id}
+        className="block text-xs font-semibold uppercase tracking-wide text-tinta-suave"
+      >
+        {etiqueta}
+      </label>
+      <Entrada
+        id={id}
+        value={valor}
+        maxLength={40}
+        className="mt-1"
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </div>
   );
 }
 

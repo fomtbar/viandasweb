@@ -22,14 +22,24 @@ export function TablaCatalogo({
   encabezado?: ReactNode;
 }) {
   return (
-    <div className="space-y-3">
-      {encabezado}
-      <div className="overflow-x-auto rounded-lg border border-linea bg-panel">
+    <div className="flex h-full flex-col gap-3">
+      {encabezado && <div className="shrink-0">{encabezado}</div>}
+
+      {/* El scroll vive aca y no en la pagina: asi las cabeceras de columna
+          quedan pegadas arriba y el encabezado de la pantalla no se va. */}
+      <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-linea bg-panel">
         <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-linea-fuerte bg-lienzo text-left text-xs uppercase tracking-wide text-tinta-suave">
+          <thead className="sticky top-0 z-10">
+            <tr className="text-left text-xs uppercase tracking-wide text-tinta-suave">
               {columnas.map((c) => (
-                <th key={c} className="px-3 py-2 font-semibold">
+                <th
+                  key={c}
+                  // El fondo y la linea inferior van en el <th> y no en el
+                  // <tr>: un <tr> sticky no pinta su fondo en todos los
+                  // navegadores, y el border-b se pierde al scrollear. El
+                  // inset shadow lo reemplaza y no ocupa lugar.
+                  className="bg-lienzo px-3 py-2 font-semibold shadow-[inset_0_-1px_0_var(--color-linea-fuerte)]"
+                >
                   {c}
                 </th>
               ))}

@@ -21,8 +21,10 @@ export default async function LayoutAdmin({ children }: { children: ReactNode })
   await requireAdmin();
 
   return (
-    <div className="space-y-4">
-      <div>
+    // h-full + flex para que el listado de abajo pueda quedarse con el alto
+    // sobrante y scrollear solo, dejando el titulo y las solapas quietos.
+    <div className="flex h-full flex-col gap-4">
+      <div className="shrink-0">
         <h1 className="text-lg font-semibold">Administración</h1>
         <nav className="mt-2 flex flex-wrap gap-1 border-b border-linea">
           {SOLAPAS.map((s) => (
@@ -36,7 +38,7 @@ export default async function LayoutAdmin({ children }: { children: ReactNode })
           ))}
         </nav>
       </div>
-      {children}
+      <div className="min-h-0 flex-1">{children}</div>
     </div>
   );
 }

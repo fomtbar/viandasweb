@@ -7,6 +7,10 @@ import { formatearFechaDdMmYyyy, minutosAHhmm } from "@/lib/tiempo";
 
 export const dynamic = "force-dynamic";
 
+/** Cabecera pegada arriba: el fondo y la línea van en el <th>, no en el <tr>. */
+const ENCABEZADO =
+  "bg-lienzo px-3 py-2 font-semibold shadow-[inset_0_-1px_0_var(--color-linea-fuerte)]";
+
 export default async function PaginaHistorial() {
   const usuario = await requireGl();
 
@@ -17,8 +21,8 @@ export default async function PaginaHistorial() {
   });
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
+    <div className="flex h-full flex-col gap-3">
+      <div className="flex shrink-0 flex-wrap items-baseline justify-between gap-2">
         <h1 className="text-lg font-semibold">Historial de pedidos</h1>
         <p className="text-sm text-tinta-suave">
           {usuario.esAdmin
@@ -27,7 +31,7 @@ export default async function PaginaHistorial() {
         </p>
       </div>
 
-      <Panel className="overflow-hidden">
+      <Panel className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {pedidos.length === 0 ? (
           <p className="p-6 text-sm text-tinta-suave">
             Todavía no hay pedidos.{" "}
@@ -37,19 +41,19 @@ export default async function PaginaHistorial() {
             .
           </p>
         ) : (
-          <div className="overflow-x-auto">
+          // Scroll interno para que la cabecera no se vaya: el historial es el
+          // otro listado que crece sin techo (ver TablaCatalogo).
+          <div className="min-h-0 flex-1 overflow-auto">
             <table className="w-full min-w-[860px] text-sm">
-              <thead>
-                <tr className="border-b border-linea-fuerte bg-lienzo text-left text-xs uppercase tracking-wide text-tinta-suave">
-                  <th className="px-3 py-2 font-semibold">Nº</th>
-                  <th className="px-3 py-2 font-semibold">Fecha</th>
-                  <th className="px-3 py-2 font-semibold">Retiro</th>
-                  <th className="px-3 py-2 font-semibold">Cant.</th>
-                  {usuario.esAdmin && (
-                    <th className="px-3 py-2 font-semibold">Solicitante</th>
-                  )}
-                  <th className="px-3 py-2 font-semibold">Motivo</th>
-                  <th className="px-3 py-2 font-semibold">Estado</th>
+              <thead className="sticky top-0 z-10">
+                <tr className="text-left text-xs uppercase tracking-wide text-tinta-suave">
+                  <th className={ENCABEZADO}>Nº</th>
+                  <th className={ENCABEZADO}>Fecha</th>
+                  <th className={ENCABEZADO}>Retiro</th>
+                  <th className={ENCABEZADO}>Cant.</th>
+                  {usuario.esAdmin && <th className={ENCABEZADO}>Solicitante</th>}
+                  <th className={ENCABEZADO}>Motivo</th>
+                  <th className={ENCABEZADO}>Estado</th>
                 </tr>
               </thead>
               <tbody>

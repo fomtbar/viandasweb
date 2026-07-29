@@ -72,6 +72,14 @@ el despliegue.
 - **`getByText` y `getByRole(..., {name})` de Playwright hacen coincidencia
   parcial e insensible a mayúsculas.** Varias pruebas fallaron por eso; usar
   `exact: true` o los `data-testid` de las filas.
+- **Un aviso que aparece dos veces rompe las pruebas por *strict mode*.** Las
+  operaciones de fila muestran el resultado en el botón y en el panel de
+  arriba a la vez. En las pruebas hay que apuntar a
+  `getByTestId("alerta")`, que es el del panel.
+- **El matcher del middleware deja fuera los archivos estáticos POR
+  EXTENSIÓN.** Cuando sólo estaba listado `favicon.ico`, agregar
+  `public/logo.png` y los iconos de `src/app` los dejó detrás del guard: sin
+  sesión devolvían un 307 a `/login` y el navegador mostraba la imagen rota.
 
 ## Nómina y cuentas son dos cosas distintas
 

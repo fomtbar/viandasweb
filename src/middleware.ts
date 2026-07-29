@@ -50,5 +50,12 @@ export async function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|api/health).*)"],
+  // Los archivos estaticos se excluyen POR EXTENSION y no por nombre: cuando
+  // solo estaba listado favicon.ico, agregar el logo y los iconos de la app
+  // (public/logo.png, src/app/icon.png, apple-icon.png) los dejo sin sesion
+  // detras del guard, que los redirigia a /login. El navegador recibia un 307
+  // en vez del PNG y mostraba la imagen rota.
+  matcher: [
+    "/((?!_next/static|_next/image|api/health|.*\\.(?:ico|png|jpg|jpeg|svg|webp|gif|webmanifest)$).*)",
+  ],
 };

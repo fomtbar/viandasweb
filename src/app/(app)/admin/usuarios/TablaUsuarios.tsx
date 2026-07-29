@@ -109,7 +109,7 @@ export function TablaUsuarios({
   }
 
   return (
-    <div className="space-y-3">
+    <div className="flex h-full flex-col gap-3">
       <FormularioAlta
         sectores={sectores}
         cargos={cargos}
@@ -123,7 +123,7 @@ export function TablaUsuarios({
         }}
       />
 
-      <Panel className="p-3">
+      <Panel className="shrink-0 p-3">
         <div className="flex flex-wrap items-end gap-3">
           <div className="min-w-56 flex-1">
             <label
@@ -181,18 +181,30 @@ export function TablaUsuarios({
         </div>
       </Panel>
 
-      <div className="overflow-x-auto rounded-lg border border-linea bg-panel">
+      {/* Con 800 filas esta es la tabla que mas necesita la cabecera fija:
+          el scroll es interno y el <thead> queda pegado arriba. Ver el
+          comentario de TablaCatalogo sobre por que el fondo va en los <th>. */}
+      <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-linea bg-panel">
         <table className="w-full min-w-[1100px] text-sm">
-          <thead>
-            <tr className="border-b border-linea-fuerte bg-lienzo text-left text-xs uppercase tracking-wide text-tinta-suave">
-              <th className="px-3 py-2 font-semibold">Legajo</th>
-              <th className="px-3 py-2 font-semibold">Apellido y nombre</th>
-              <th className="px-3 py-2 font-semibold">Email</th>
-              <th className="px-3 py-2 font-semibold">Sector por defecto</th>
-              <th className="px-3 py-2 font-semibold">GL</th>
-              <th className="px-3 py-2 font-semibold">Admin</th>
-              <th className="px-3 py-2 font-semibold">Activo</th>
-              <th className="px-3 py-2 font-semibold">Acciones</th>
+          <thead className="sticky top-0 z-10">
+            <tr className="text-left text-xs uppercase tracking-wide text-tinta-suave">
+              {[
+                "Legajo",
+                "Apellido y nombre",
+                "Email",
+                "Sector por defecto",
+                "GL",
+                "Admin",
+                "Activo",
+                "Acciones",
+              ].map((c) => (
+                <th
+                  key={c}
+                  className="bg-lienzo px-3 py-2 font-semibold shadow-[inset_0_-1px_0_var(--color-linea-fuerte)]"
+                >
+                  {c}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>

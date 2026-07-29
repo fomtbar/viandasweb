@@ -1,9 +1,18 @@
 "use client";
 
-import { useState } from "react";
-import { Entrada } from "@/components/ui";
-import { TablaCatalogo, BotonFila } from "@/components/admin/TablaCatalogo";
-import { actualizarSector } from "@/app/(app)/admin/acciones";
+import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
+import { Boton, Entrada } from "@/components/ui";
+import {
+  TablaCatalogo,
+  BotonFila,
+  AvisoOperacion,
+} from "@/components/admin/TablaCatalogo";
+import {
+  actualizarSector,
+  crearSector,
+  type Resultado,
+} from "@/app/(app)/admin/acciones";
 
 interface Sector {
   id: number;
@@ -12,14 +21,53 @@ interface Sector {
 }
 
 export function TablaSectores({ sectores }: { sectores: Sector[] }) {
+  const [nuevo, setNuevo] = useState("");
+  const [estado, setEstado] = useState<Resultado | null>(null);
+  const [procesando, iniciar] = useTransition();
+  const router = useRouter();
+
+  function agregar() {
+    iniciar(async () => {
+      const resultado = await crearSector(nuevo);
+      setEstado(resultado);
+      if (resultado.ok) {
+        setNuevo("");
+        router.refresh();
+      }
+    });
+  }
+
   return (
     <TablaCatalogo
       columnas={["Nombre", "Activo", ""]}
       encabezado={
-        <p className="text-sm text-tinta-suave">
-          Un sector inactivo deja de aparecer en el filtro de la pantalla de
-          pedido, pero los pedidos anteriores lo conservan.
-        </p>
+        <div className="space-y-2">
+          <p className="text-sm text-tinta-suave">
+            Un sector inactivo deja de aparecer en el filtro de la pantalla de
+            pedido, pero los pedidos anteriores lo conservan.
+          </p>
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="min-w-64 flex-1">
+              <label
+                htmlFor="sector-nuevo"
+                className="block text-xs font-semibold uppercase tracking-wide text-tinta-suave"
+              >
+                Agregar sector
+              </label>
+              <Entrada
+                id="sector-nuevo"
+                value={nuevo}
+                maxLength={120}
+                className="mt-1"
+                onChange={(e) => setNuevo(e.target.value)}
+              />
+            </div>
+            <Boton onClick={agregar} disabled={procesando || !nuevo.trim()}>
+              {procesando ? "Agregando…" : "Agregar"}
+            </Boton>
+          </div>
+          <AvisoOperacion estado={estado} />
+        </div>
       }
     >
       {sectores.map((s) => (

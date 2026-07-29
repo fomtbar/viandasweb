@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { requireUsuarioFresco } from "@/lib/auth/guards";
 import { cerrarSesion } from "../(auth)/login/acciones";
@@ -18,9 +19,23 @@ export default async function LayoutApp({ children }: { children: ReactNode }) {
     usuario.empleado.cargo?.descripcion ?? usuario.empleado.cargo?.codigo ?? null;
 
   return (
-    <div className="min-h-screen bg-lienzo">
-      <header className="border-b border-linea bg-panel">
+    // Alto exacto de la ventana: la pagina NO scrollea. El scroll vive dentro
+    // de <main>, y los listados se lo quedan para que sus cabeceras no se
+    // vayan de pantalla (ver TablaCatalogo).
+    <div className="flex h-screen flex-col bg-lienzo">
+      <header className="shrink-0 border-b border-linea bg-panel">
         <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5">
+          {/* priority: es lo unico por encima del pliegue en todas las
+              pantallas, y sin esto parpadea en cada navegacion. */}
+          <Image
+            src="/logo.png"
+            alt="TBAR"
+            width={32}
+            height={32}
+            priority
+            className="h-8 w-8 shrink-0"
+          />
+
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm">
               <span className="font-semibold text-tinta">
@@ -54,7 +69,13 @@ export default async function LayoutApp({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      <main className="mx-auto max-w-[1600px] p-4">{children}</main>
+      {/* min-h-0 es imprescindible: sin el, un hijo flex crece con su
+          contenido en vez de scrollear, y el h-screen de arriba no sirve.
+          overflow-y-auto y no overflow-hidden para que las pantallas que no
+          manejan su propio scroll (pedido, config) sigan funcionando igual. */}
+      <main className="mx-auto min-h-0 w-full max-w-[1600px] flex-1 overflow-y-auto p-4">
+        {children}
+      </main>
     </div>
   );
 }

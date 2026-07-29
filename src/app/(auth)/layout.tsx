@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import Image from "next/image";
 
 /**
  * Layout de las pantallas de acceso: centrado y SIN navegacion.
@@ -10,6 +11,18 @@ export default function LayoutAuth({ children }: { children: ReactNode }) {
     <main className="flex min-h-screen items-center justify-center bg-lienzo p-4">
       <div className="w-full max-w-sm">
         <header className="mb-6 text-center">
+          {/* El PNG viene con fondo blanco opaco, no transparente. Sobre el
+              gris del lienzo quedaba un cuadrado suelto: redondeado y con
+              borde lee como icono de aplicacion. En el header no hace falta,
+              ahi el panel ya es blanco. */}
+          <Image
+            src="/logo.png"
+            alt="TBAR"
+            width={64}
+            height={64}
+            priority
+            className="mx-auto mb-3 h-16 w-16 rounded-xl border border-linea shadow-sm"
+          />
           <h1 className="text-xl font-bold tracking-tight text-tinta">
             {process.env.NEXT_PUBLIC_APP_NAME ?? "Sistema de Viandas"}
           </h1>
