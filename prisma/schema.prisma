@@ -50,7 +50,9 @@ model Cargo {
   id          Int     @id @default(autoincrement())
   codigo      String  @unique(map: "UQ_viandas_cargos_codigo") @db.NVarChar(30)
   descripcion String? @db.NVarChar(120)
-  /// Determina es_gl al crear cuentas en "Sincronizar nomina".
+  /// Propone es_gl al dar de alta a alguien y al crear la cuenta de un
+  /// empleado que no la tenia. Cambiarlo NO re-propaga a las cuentas ya
+  /// creadas: solo afecta a las nuevas.
   esLider     Boolean @default(false) @map("es_lider")
   activo      Boolean @default(true)
 
