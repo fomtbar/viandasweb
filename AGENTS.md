@@ -71,7 +71,10 @@ el despliegue.
   `prisma/migrations/20260729103500_timestamps_con_offset`.
 - **`getByText` y `getByRole(..., {name})` de Playwright hacen coincidencia
   parcial e insensible a mayúsculas.** Varias pruebas fallaron por eso; usar
-  `exact: true` o los `data-testid` de las filas.
+  `exact: true` o los `data-testid` de las filas. El panel de edición de
+  personal tiene **"Sector" y "Sector por defecto" a la vez** (el de la nómina
+  y el que se precarga al pedir): un `getByLabel("Sector")` sin `exact`
+  matchea los dos y rompe por *strict mode*.
 - **Un aviso que aparece dos veces rompe las pruebas por *strict mode*.** Las
   operaciones de fila muestran el resultado en el botón y en el panel de
   arriba a la vez. En las pruebas hay que apuntar a
@@ -96,9 +99,29 @@ Por eso la grilla de `/admin/usuarios` lista **empleados**, no usuarios, e
 incluye a los dados de baja: si filtrara por activo, un empleado desactivado
 desaparecería y no habría forma de reactivarlo.
 
-"Crear cuentas faltantes" (antes "Sincronizar nómina") **no importa nada de
-ninguna fuente externa**: le crea la cuenta a los empleados activos que no la
-tengan. Con el alta creando siempre las dos, casi siempre va a dar cero.
+Ya no existe el botón "Crear cuentas faltantes" (antes "Sincronizar nómina"):
+desde que el alta crea siempre las dos filas, daba cero todas las veces. Lo que
+queda es el botón **"Crear cuenta"** de cada fila, para los empleados que vienen
+de la importación de la SQLite y nunca tuvieron una.
+
+## Un solo formulario por persona
+
+La grilla de `/admin/usuarios` es de **solo lectura**. Todo —incluidos los
+checks GL, Admin y Activo— se modifica en el **modal** que abre "Editar datos".
+Antes la fila y un panel desplegable eran dos formularios sobre la misma
+persona, con dos botones de guardar que se pisaban.
+
+Es un modal y no un panel inline por una razón concreta: desplegado dentro de
+la tabla empujaba las filas y, con 800 personas y scroll interno, la fila que
+estabas editando se perdía de vista. De paso, la exclusividad sale gratis: con
+el modal abierto no hay otra fila que tocar, así que no hay que deshabilitar
+nada. El estado (`legajoEditando`) vive en `TablaUsuarios` y el modal se monta
+**fuera** de la tabla.
+
+En ese panel, **"Activo" es la baja**: apaga la nómina y la cuenta juntas
+(`actualizarPersonaAccion`). La vuelta no está ahí, porque quien está de baja
+no tiene panel: la hace el botón "Reactivar" de su fila, que deja la cuenta
+desactivada a propósito, para que darle acceso siga siendo una decisión aparte.
 
 ## Operaciones destructivas: `PERMITIR_DESTRUCTIVO`
 
@@ -122,6 +145,18 @@ a la base de la compañía.
 - **`pedido_items` está desnormalizado a propósito** (guarda nombre, sector y
   cargo como texto): es un snapshot histórico y permite externos sin legajo.
   No agregarle una FK a `empleados`.
+- **Renumerar un legajo se hace al revés de lo que parece.** `legajo` no es la
+  PK de `viandas_empleados` (lo es `id`) pero **tres** FK lo referencian —la
+  cuenta y las dos de `viandas_pedidos`— y las tres son `ON UPDATE NO ACTION`,
+  así que un `UPDATE` del legajo es imposible en cualquier orden. Tampoco se
+  arregla con cascadas: `viandas_pedidos` tiene dos FK a la misma tabla y SQL
+  Server rechaza la segunda con el error 1785 (*multiple cascade paths*). Por
+  eso `actualizarPersona` **crea la fila destino, repunta los hijos y recién
+  entonces borra la de origen**, todo en una transacción. En cada paso la
+  integridad se sostiene sola y no hace falta tocar el esquema.
+  Dos consecuencias: el `id` del empleado cambia (no lo referencia nadie, todas
+  las FK van por legajo), y **`pedido_items` no se toca** — es un snapshot
+  histórico sin FK y se queda con el número viejo a propósito.
 - **Dos de las tres ventanas de overtime cruzan la medianoche.** Cualquier
   cambio en la comparación de rangos debe seguir pasando
   `src/lib/overtime/overtime.test.ts`.

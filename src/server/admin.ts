@@ -151,32 +151,151 @@ export async function crearPersona(datos: DatosPersona) {
   return { ok: true as const };
 }
 
-export async function actualizarEmpleado(
-  legajo: number,
-  datos: Pick<DatosPersona, "apellidoNombre" | "sectorId" | "cargoId" | "turnoId">,
-) {
-  const empleado = await prisma.empleado.findUnique({ where: { legajo } });
-  if (!empleado) return false;
+export interface DatosEdicionPersona {
+  /** Puede diferir del actual: es el unico campo que se puede renumerar. */
+  legajo: number;
+  apellidoNombre: string;
+  sectorId: number | null;
+  cargoId: number | null;
+  turnoId: number | null;
+  email: string | null;
+  sectorDefaultId: number | null;
+  esGl: boolean;
+  esAdmin: boolean;
+  /** Vale para la nomina Y para la cuenta: es la baja. */
+  activo: boolean;
+}
 
-  await prisma.empleado.update({
-    where: { legajo },
-    data: {
-      apellidoNombre: datos.apellidoNombre,
-      sectorId: datos.sectorId,
-      cargoId: datos.cargoId,
-      turnoId: datos.turnoId,
+export type MotivoEdicion = "sin-empleado" | "legajo-en-uso";
+
+/**
+ * Edicion completa de una persona: nomina y cuenta a la vez.
+ *
+ * Es una sola operacion y no dos porque la pantalla tiene un unico formulario
+ * por persona. Reemplaza al par actualizarEmpleado + actualizar del usuario,
+ * que se pisaban entre si.
+ *
+ * Sobre renumerar el legajo, que es la parte delicada: TRES claves foraneas
+ * apuntan a viandas_empleados.legajo (la cuenta y las dos de viandas_pedidos)
+ * y las tres son ON UPDATE NO ACTION, asi que un UPDATE del legajo es
+ * imposible en cualquier orden. Tampoco se arregla con cascadas: viandas_
+ * pedidos tiene dos FK a la misma tabla y SQL Server rechaza la segunda con
+ * el error 1785 ("multiple cascade paths").
+ *
+ * Por eso se hace al reves: se crea la fila destino, se repuntan los hijos y
+ * recien entonces se borra la de origen. En cada paso la integridad
+ * referencial se sostiene sola y no hace falta tocar el esquema.
+ */
+export async function actualizarPersona(
+  legajoActual: number,
+  datos: DatosEdicionPersona,
+): Promise<{ ok: true } | { ok: false; motivo: MotivoEdicion }> {
+  const empleado = await prisma.empleado.findUnique({
+    where: { legajo: legajoActual },
+    select: {
+      esExterno: true,
+      creadoAt: true,
+      usuario: { select: { debeCambiarPassword: true } },
     },
   });
-  return true;
+  if (!empleado) return { ok: false, motivo: "sin-empleado" };
+
+  const renumera = datos.legajo !== legajoActual;
+  if (renumera) {
+    const ocupado = await prisma.empleado.findUnique({
+      where: { legajo: datos.legajo },
+      select: { legajo: true },
+    });
+    if (ocupado) return { ok: false, motivo: "legajo-en-uso" };
+  }
+
+  // La contrasena inicial ES el legajo. Si todavia no la cambio y le movemos
+  // el numero, se queda sin forma de adivinarla: se rehashea al nuevo.
+  // Fuera de la transaccion porque bcrypt tarda ~60 ms.
+  const rehashear =
+    renumera && empleado.usuario !== null && empleado.usuario.debeCambiarPassword;
+  const passwordHash = rehashear ? await hashPassword(String(datos.legajo)) : null;
+
+  const camposEmpleado = {
+    apellidoNombre: datos.apellidoNombre,
+    sectorId: datos.sectorId,
+    cargoId: datos.cargoId,
+    turnoId: datos.turnoId,
+    activo: datos.activo,
+  };
+  const camposCuenta = {
+    email: datos.email,
+    sectorDefaultId: datos.sectorDefaultId,
+    esGl: datos.esGl,
+    esAdmin: datos.esAdmin,
+    activo: datos.activo,
+    ...(passwordHash ? { passwordHash } : {}),
+  };
+
+  await prisma.$transaction(async (tx) => {
+    if (!renumera) {
+      await tx.empleado.update({
+        where: { legajo: legajoActual },
+        data: camposEmpleado,
+      });
+      // updateMany y no update: la nomina importada tiene empleados sin
+      // cuenta, y update lanzaria si no encuentra la fila.
+      await tx.usuario.updateMany({
+        where: { legajo: legajoActual },
+        data: camposCuenta,
+      });
+      return;
+    }
+
+    // 1. El destino primero, para que los hijos tengan a donde apuntar.
+    //    `id` es IDENTITY y cambia: no lo referencia nadie, todas las FK a
+    //    esta tabla van por legajo. creadoAt y esExterno se copian para que
+    //    la fila no parezca recien dada de alta.
+    await tx.empleado.create({
+      data: {
+        legajo: datos.legajo,
+        esExterno: empleado.esExterno,
+        creadoAt: empleado.creadoAt,
+        ...camposEmpleado,
+      },
+    });
+
+    // 2. Los hijos.
+    await tx.usuario.updateMany({
+      where: { legajo: legajoActual },
+      data: { legajo: datos.legajo, ...camposCuenta },
+    });
+    await tx.pedido.updateMany({
+      where: { solicitanteLegajo: legajoActual },
+      data: { solicitanteLegajo: datos.legajo },
+    });
+    await tx.pedido.updateMany({
+      where: { canceladoPorLegajo: legajoActual },
+      data: { canceladoPorLegajo: datos.legajo },
+    });
+
+    // viandas_pedido_items NO se toca a proposito: guarda el legajo como
+    // parte de un snapshot historico, sin FK, y muestra lo que era cierto el
+    // dia del pedido. Ver AGENTS.md.
+
+    // 3. Y ahora si, el origen queda sin nadie apuntandolo.
+    await tx.empleado.delete({ where: { legajo: legajoActual } });
+  });
+
+  return { ok: true };
 }
 
 /**
- * Baja o reactivacion en la nomina.
+ * Reactivacion desde la fila de un empleado dado de baja.
  *
- * Al dar de baja se desactiva tambien la cuenta: si no, la persona seguiria
- * entrando al sistema despues de irse de la planta. Al reactivar NO se
- * reactiva la cuenta sola, porque el rol y el acceso son una decision aparte
- * que el admin toma en la grilla.
+ * Es el unico camino de vuelta: quien esta de baja no aparece en la grilla
+ * normal y no tiene panel de edicion, asi que no puede pasar por
+ * actualizarPersona(). Deja la cuenta como estaba a proposito, porque darle
+ * acceso de nuevo es una decision aparte: el admin la toma despues, editando
+ * la fila que acaba de reaparecer.
+ *
+ * La baja, en cambio, ya no vive aca: la hace actualizarPersona() con
+ * activo=false, que apaga nomina y cuenta juntas.
  *
  * No borra nada: pedido_items guarda nombre, sector y cargo como snapshot, y
  * los pedidos historicos siguen mostrandose igual.
@@ -218,41 +337,6 @@ export async function crearCuenta(legajo: number) {
     },
   });
   return { ok: true as const };
-}
-
-/**
- * Crea las cuentas que falten.
- *
- * Va en lotes porque cada cuenta implica un hash bcrypt (~60 ms): hacer los
- * cientos de una sola vez agotaria el tiempo de la server action.
- */
-export async function sincronizarNomina(tamanoLote = 100) {
-  const pendientes = await prisma.empleado.findMany({
-    where: { activo: true, usuario: null },
-    include: { cargo: true },
-    orderBy: { legajo: "asc" },
-    take: tamanoLote,
-  });
-
-  if (pendientes.length === 0) return { creados: 0, restantes: 0 };
-
-  const datos = await Promise.all(
-    pendientes.map(async (e) => ({
-      legajo: e.legajo,
-      passwordHash: await hashPassword(String(e.legajo)),
-      debeCambiarPassword: true,
-      sectorDefaultId: e.sectorId,
-      esGl: e.cargo?.esLider ?? false,
-      esAdmin: false,
-      activo: true,
-    })),
-  );
-  await prisma.usuario.createMany({ data: datos });
-
-  const restantes = await prisma.empleado.count({
-    where: { activo: true, usuario: null },
-  });
-  return { creados: datos.length, restantes };
 }
 
 export async function resetearPassword(usuarioId: number) {

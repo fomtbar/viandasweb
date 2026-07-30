@@ -167,26 +167,25 @@ test("el admin edita las preferencias generales y avisa por marcadores inválido
   });
 });
 
-test("crear cuentas faltantes informa que la nómina ya está completa", async ({
+test("un admin no puede quitarse a sí mismo el rol, desactivarse ni renumerarse", async ({
   page,
 }) => {
   await ingresar(page, ADMIN);
   await page.goto("/admin/usuarios");
-
-  await page.getByRole("button", { name: "Crear cuentas faltantes" }).click();
-  await expect(
-    page.getByTestId("alerta").filter({ hasText: "ya tiene cuenta" }),
-  ).toBeVisible({ timeout: 60_000 });
-});
-
-test("un admin no puede quitarse a sí mismo el rol ni desactivarse", async ({ page }) => {
-  await ingresar(page, ADMIN);
-  await page.goto("/admin/usuarios");
   await page.getByLabel("Buscar").fill(String(ADMIN));
 
-  const fila = page.getByTestId(`usuario-${ADMIN}`);
-  await expect(fila.getByRole("checkbox", { name: /es administrador/ })).toBeDisabled();
-  await expect(fila.getByRole("checkbox", { name: /activo/ })).toBeDisabled();
+  // La grilla es de solo lectura: los tres checks estan deshabilitados en
+  // TODAS las filas, asi que la autoproteccion hay que verla en el panel.
+  await page
+    .getByTestId(`usuario-${ADMIN}`)
+    .getByRole("button", { name: "Editar datos" })
+    .click();
+
+  const panel = page.getByTestId(`empleado-edicion-${ADMIN}`);
+  await expect(panel.getByRole("checkbox", { name: /es administrador/ })).toBeDisabled();
+  await expect(panel.getByRole("checkbox", { name: /activo/ })).toBeDisabled();
+  // Cambiarse el propio legajo invalidaria la sesion en curso.
+  await expect(panel.getByLabel("Legajo", { exact: true })).toBeDisabled();
 
   const enBase = await prisma.usuario.findUnique({ where: { legajo: ADMIN } });
   expect(enBase!.esAdmin).toBe(true);

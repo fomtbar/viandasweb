@@ -7,10 +7,9 @@ import { prisma } from "@/lib/prisma";
 import {
   crearCuenta,
   crearPersona,
-  actualizarEmpleado,
+  actualizarPersona,
   cambiarActivoEmpleado,
   resetearPassword,
-  sincronizarNomina,
   contarAdminsActivos,
 } from "@/server/admin";
 import { parseRangoHorario } from "@/lib/overtime/parse";
@@ -256,55 +255,6 @@ export async function crearVentanaOt(entrada: unknown): Promise<Resultado> {
   };
 }
 
-// ── Usuarios ─────────────────────────────────────────────────
-
-const EsquemaUsuario = z.object({
-  usuarioId: z.number().int(),
-  email: z.string().max(200),
-  sectorDefaultId: z.number().int().nullable(),
-  esGl: z.boolean(),
-  esAdmin: z.boolean(),
-  activo: z.boolean(),
-});
-
-export async function actualizarUsuario(entrada: unknown): Promise<Resultado> {
-  const admin = await requireAdmin();
-  const parseado = EsquemaUsuario.safeParse(entrada);
-  if (!parseado.success) return { ok: false, error: "Datos inválidos." };
-  const datos = parseado.data;
-
-  const destino = await prisma.usuario.findUnique({ where: { id: datos.usuarioId } });
-  if (!destino) return { ok: false, error: "El usuario no existe." };
-
-  // Protecciones para no quedarse sin administradores.
-  const seDegrada = destino.esAdmin && (!datos.esAdmin || !datos.activo);
-  if (seDegrada) {
-    if (destino.id === admin.id) {
-      return {
-        ok: false,
-        error: "No puede quitarse a sí mismo el rol de administrador ni desactivarse.",
-      };
-    }
-    if ((await contarAdminsActivos()) <= 1) {
-      return { ok: false, error: "Debe quedar al menos un administrador activo." };
-    }
-  }
-
-  await prisma.usuario.update({
-    where: { id: datos.usuarioId },
-    data: {
-      email: datos.email.trim() || null,
-      sectorDefaultId: datos.sectorDefaultId,
-      esGl: datos.esGl,
-      esAdmin: datos.esAdmin,
-      activo: datos.activo,
-    },
-  });
-
-  revalidatePath("/admin/usuarios");
-  return { ok: true, mensaje: "Usuario actualizado." };
-}
-
 // ── Personal (nomina) ────────────────────────────────────────
 
 /** El legajo llega de un <input type="number">: puede venir como string. */
@@ -364,62 +314,113 @@ export async function crearPersonaAccion(entrada: unknown): Promise<Resultado> {
   };
 }
 
-const EsquemaEmpleado = EsquemaPersona.pick({
-  legajo: true,
-  apellidoNombre: true,
-  sectorId: true,
-  cargoId: true,
-  turnoId: true,
+/**
+ * Edicion de una persona: nomina y cuenta en un solo formulario.
+ *
+ * `legajoActual` es el que identifica la fila; `legajo` es el valor que quedo
+ * en el campo, que puede ser otro. Todo lo demas se pisa tal cual venga.
+ */
+const EsquemaPersonaEdicion = EsquemaPersona.extend({
+  legajoActual: Legajo,
+  sectorDefaultId: IdOpcional,
+  activo: z.boolean(),
 });
 
-export async function actualizarEmpleadoAccion(entrada: unknown): Promise<Resultado> {
-  await requireAdmin();
-  const parseado = EsquemaEmpleado.safeParse(entrada);
+export async function actualizarPersonaAccion(entrada: unknown): Promise<Resultado> {
+  const admin = await requireAdmin();
+  const parseado = EsquemaPersonaEdicion.safeParse(entrada);
   if (!parseado.success) {
-    return { ok: false, error: "El apellido y nombre es obligatorio." };
+    const primero = parseado.error.issues[0];
+    return {
+      ok: false,
+      error:
+        primero?.path[0] === "apellidoNombre"
+          ? "El apellido y nombre es obligatorio."
+          : "Datos inválidos. Revisá el legajo y los campos cargados.",
+    };
   }
-  const { legajo, ...datos } = parseado.data;
+  const { legajoActual, ...datos } = parseado.data;
 
-  if (!(await actualizarEmpleado(legajo, datos))) {
-    return { ok: false, error: "No existe un empleado con ese legajo." };
+  const destino = await prisma.usuario.findUnique({ where: { legajo: legajoActual } });
+  const esMiCuenta = destino?.id === admin.id;
+
+  // Protecciones para no quedarse sin administradores. Antes vivian repartidas
+  // entre actualizarUsuario y cambiarActivoEmpleadoAccion; ahora que el
+  // formulario es uno solo, tienen que estar todas acá.
+  if (esMiCuenta) {
+    if (datos.legajo !== legajoActual) {
+      return {
+        ok: false,
+        error:
+          "No puede cambiar su propio legajo: la sesión en curso quedaría inválida. Pedíselo a otro administrador.",
+      };
+    }
+    if (!datos.esAdmin || !datos.activo) {
+      return {
+        ok: false,
+        error:
+          "No puede quitarse a sí mismo el rol de administrador, desactivarse ni darse de baja.",
+      };
+    }
+  } else if (
+    destino?.esAdmin &&
+    destino.activo &&
+    (!datos.esAdmin || !datos.activo) &&
+    (await contarAdminsActivos()) <= 1
+  ) {
+    return { ok: false, error: "Debe quedar al menos un administrador activo." };
+  }
+
+  const resultado = await actualizarPersona(legajoActual, {
+    ...datos,
+    email: datos.email || null,
+  });
+
+  if (!resultado.ok) {
+    const errores: Record<typeof resultado.motivo, string> = {
+      "sin-empleado": "No existe un empleado con ese legajo.",
+      "legajo-en-uso": `El legajo ${datos.legajo} ya está en uso por otra persona.`,
+    };
+    return { ok: false, error: errores[resultado.motivo] };
   }
 
   revalidatePath("/admin/usuarios");
   // El buscador de personal de la pantalla de pedido muestra nombre y sector.
   revalidatePath("/");
-  return { ok: true, mensaje: "Datos del empleado actualizados." };
+
+  if (!datos.activo) {
+    return {
+      ok: true,
+      mensaje:
+        "Empleado dado de baja. Su cuenta quedó desactivada y su historial se conserva.",
+    };
+  }
+  return {
+    ok: true,
+    mensaje:
+      datos.legajo === legajoActual
+        ? "Datos actualizados."
+        : `Datos actualizados. El legajo pasó de ${legajoActual} a ${datos.legajo}, y sus pedidos del historial lo siguieron.`,
+  };
 }
 
-export async function cambiarActivoEmpleadoAccion(
-  legajo: number,
-  activo: boolean,
-): Promise<Resultado> {
-  const admin = await requireAdmin();
+/**
+ * Vuelta a la nomina de alguien dado de baja.
+ *
+ * La baja va por actualizarPersonaAccion (el check "Activo" del panel), pero
+ * la vuelta no puede: quien esta de baja no tiene panel de edicion. De ahi que
+ * esta accion exista sola y solo en un sentido.
+ */
+export async function reactivarEmpleadoAccion(legajo: number): Promise<Resultado> {
+  await requireAdmin();
 
-  if (!activo) {
-    if (legajo === admin.legajo) {
-      return { ok: false, error: "No puede darse de baja a sí mismo." };
-    }
-    // La baja arrastra la cuenta: hay que cuidar el mismo invariante que
-    // actualizarUsuario, no quedarse sin administradores.
-    const destino = await prisma.usuario.findUnique({ where: { legajo } });
-    if (destino?.esAdmin && destino.activo && (await contarAdminsActivos()) <= 1) {
-      return { ok: false, error: "Debe quedar al menos un administrador activo." };
-    }
-  }
-
-  if (!(await cambiarActivoEmpleado(legajo, activo))) {
+  if (!(await cambiarActivoEmpleado(legajo, true))) {
     return { ok: false, error: "No existe un empleado con ese legajo." };
   }
 
   revalidatePath("/admin/usuarios");
   revalidatePath("/");
-  return {
-    ok: true,
-    mensaje: activo
-      ? "Empleado reactivado. Revisá su rol para darle acceso."
-      : "Empleado dado de baja. Su cuenta quedó desactivada y su historial se conserva.",
-  };
+  return { ok: true, mensaje: "Empleado reactivado. Revisá su rol para darle acceso." };
 }
 
 export async function crearUsuarioDeLegajo(legajo: number): Promise<Resultado> {
@@ -447,22 +448,5 @@ export async function resetearPasswordUsuario(usuarioId: number): Promise<Result
     ok: true,
     mensaje:
       "Contraseña restablecida al número de legajo. Las sesiones abiertas de esa persona se cerraron.",
-  };
-}
-
-export async function sincronizarNominaAccion(): Promise<
-  Resultado & { creados?: number; restantes?: number }
-> {
-  await requireAdmin();
-  const { creados, restantes } = await sincronizarNomina();
-  revalidatePath("/admin/usuarios");
-  return {
-    ok: true,
-    creados,
-    restantes,
-    mensaje:
-      creados === 0
-        ? "Toda la nómina activa ya tiene cuenta."
-        : `Se crearon ${creados} cuentas.${restantes > 0 ? ` Faltan ${restantes}: volvé a ejecutarlo.` : ""}`,
   };
 }

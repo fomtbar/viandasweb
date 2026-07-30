@@ -12,13 +12,11 @@ import {
 import { AvisoOperacion, BotonFila } from "@/components/admin/TablaCatalogo";
 import { normalizar } from "@/lib/texto";
 import {
-  actualizarEmpleadoAccion,
-  actualizarUsuario,
-  cambiarActivoEmpleadoAccion,
+  actualizarPersonaAccion,
   crearPersonaAccion,
   crearUsuarioDeLegajo,
+  reactivarEmpleadoAccion,
   resetearPasswordUsuario,
-  sincronizarNominaAccion,
   type Resultado,
 } from "@/app/(app)/admin/acciones";
 
@@ -68,7 +66,15 @@ export function TablaUsuarios({
   const [busqueda, setBusqueda] = useState("");
   const [filtro, setFiltro] = useState<Filtro>("todos");
   const [estado, setEstado] = useState<Resultado | null>(null);
-  const [procesando, iniciar] = useTransition();
+  /**
+   * Legajo de la persona que se esta editando en el modal, o null.
+   *
+   * Vive aca y no en cada fila por dos razones: solo puede haber una edicion
+   * abierta, y el modal se monta FUERA de la tabla. Meterlo en un <tr> lo ata
+   * al scroll de la grilla, que es justo lo que hacia que al abrir la edicion
+   * la fila se perdiera de vista.
+   */
+  const [legajoEditando, setLegajoEditando] = useState<number | null>(null);
   const router = useRouter();
 
   const busquedaDiferida = useDeferredValue(busqueda);
@@ -101,12 +107,11 @@ export function TablaUsuarios({
   const conCuenta = enNomina.filter((u) => u.usuarioId !== null).length;
   const deBaja = usuarios.length - enNomina.length;
 
-  function sincronizar() {
-    iniciar(async () => {
-      setEstado(await sincronizarNominaAccion());
-      router.refresh();
-    });
-  }
+  // Se resuelve contra la lista y no se guarda la fila entera en el estado:
+  // asi, despues de un router.refresh(), el modal muestra lo que quedo en la
+  // base y no una copia vieja. Si la persona desaparece de la grilla (baja o
+  // renumeracion), queda undefined y el modal se desmonta solo.
+  const editando = usuarios.find((u) => u.legajo === legajoEditando);
 
   return (
     <div className="flex h-full flex-col gap-3">
@@ -162,12 +167,6 @@ export function TablaUsuarios({
               <option value="baja">Dados de baja</option>
             </Seleccion>
           </div>
-
-          {/* No importa nomina de ninguna fuente externa: crea la cuenta de
-              acceso a los empleados que todavia no tengan una. */}
-          <Boton variante="secundario" onClick={sincronizar} disabled={procesando}>
-            {procesando ? "Creando…" : "Crear cuentas faltantes"}
-          </Boton>
         </div>
 
         <p className="mt-2 text-sm text-tinta-suave tabular">
@@ -212,10 +211,7 @@ export function TablaUsuarios({
               <Fila
                 key={u.legajo}
                 usuario={u}
-                sectores={sectores}
-                cargos={cargos}
-                turnos={turnos}
-                esMiCuenta={u.legajo === miUsuarioLegajo}
+                onEditar={() => setLegajoEditando(u.legajo)}
                 onCambio={() => router.refresh()}
                 onResultado={setEstado}
               />
@@ -228,6 +224,25 @@ export function TablaUsuarios({
           </p>
         )}
       </div>
+
+      {editando && (
+        <ModalEdicionPersona
+          // El key fuerza a remontar (y por lo tanto a releer los valores
+          // iniciales) cuando se pasa de una persona a otra sin cerrar.
+          key={editando.legajo}
+          usuario={editando}
+          sectores={sectores}
+          cargos={cargos}
+          turnos={turnos}
+          esMiCuenta={editando.legajo === miUsuarioLegajo}
+          onCerrar={() => setLegajoEditando(null)}
+          onGuardado={(resultado) => {
+            setEstado(resultado);
+            setLegajoEditando(null);
+            router.refresh();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -440,20 +455,23 @@ function FormularioAlta({
   );
 }
 
+/**
+ * Una persona de la nomina.
+ *
+ * La fila es de SOLO LECTURA: todo lo que se puede cambiar vive en el modal de
+ * edicion. Antes la fila editaba email, sector y roles con su propio boton de
+ * guardar, mientras un panel desplegable editaba nombre, sector, cargo y turno
+ * con otro: dos formularios sobre la misma persona y dos maneras de guardar a
+ * medias.
+ */
 function Fila({
   usuario,
-  sectores,
-  cargos,
-  turnos,
-  esMiCuenta,
+  onEditar,
   onCambio,
   onResultado,
 }: {
   usuario: FilaUsuario;
-  sectores: Opcion[];
-  cargos: OpcionCargo[];
-  turnos: Opcion[];
-  esMiCuenta: boolean;
+  onEditar: () => void;
   onCambio: () => void;
   /**
    * Para las operaciones que hacen desaparecer la fila (baja, reactivacion):
@@ -462,13 +480,6 @@ function Fila({
    */
   onResultado: (resultado: Resultado) => void;
 }) {
-  const [email, setEmail] = useState(usuario.email ?? "");
-  const [sectorId, setSectorId] = useState(usuario.sectorDefaultId);
-  const [esGl, setEsGl] = useState(usuario.esGl);
-  const [esAdmin, setEsAdmin] = useState(usuario.esAdmin);
-  const [activo, setActivo] = useState(usuario.activo);
-  const [editando, setEditando] = useState(false);
-
   const sinCuenta = usuario.usuarioId === null;
   const deBaja = !usuario.empleadoActivo;
 
@@ -492,7 +503,7 @@ function Fila({
             etiqueta="Reactivar"
             confirmar={`¿Reactivar a ${usuario.apellidoNombre} en la nómina? La cuenta queda desactivada hasta que le asignes un rol.`}
             onGuardar={async () => {
-              const r = await cambiarActivoEmpleadoAccion(usuario.legajo, true);
+              const r = await reactivarEmpleadoAccion(usuario.legajo);
               if (r.ok) {
                 onResultado(r);
                 onCambio();
@@ -506,195 +517,222 @@ function Fila({
   }
 
   return (
-    <>
-      <tr
-        data-testid={`usuario-${usuario.legajo}`}
-        className={`border-b border-linea last:border-0 ${
-          sinCuenta ? "bg-lienzo/60 text-tinta-tenue" : ""
-        } ${editando ? "border-b-0" : ""}`}
-      >
-        <td className="px-3 py-1.5 tabular">{usuario.legajo}</td>
-        <td className="px-3 py-1.5">
-          <span className={sinCuenta ? "" : "font-medium"}>
-            {usuario.apellidoNombre}
-          </span>
-          <span className="block text-xs text-tinta-tenue">{usuario.cargoNombre}</span>
+    <tr
+      data-testid={`usuario-${usuario.legajo}`}
+      className={`border-b border-linea last:border-0 ${
+        sinCuenta ? "bg-lienzo/60 text-tinta-tenue" : ""
+      }`}
+    >
+      <td className="px-3 py-1.5 tabular">{usuario.legajo}</td>
+      <td className="px-3 py-1.5">
+        <span className={sinCuenta ? "" : "font-medium"}>
+          {usuario.apellidoNombre}
+        </span>
+        <span className="block text-xs text-tinta-tenue">{usuario.cargoNombre}</span>
+      </td>
+
+      {sinCuenta ? (
+        <td className="px-3 py-1.5 text-xs" colSpan={5}>
+          Sin cuenta de acceso.
         </td>
-
-        {sinCuenta ? (
-          <>
-            <td className="px-3 py-1.5 text-xs" colSpan={5}>
-              Sin cuenta de acceso.
-            </td>
-          </>
-        ) : (
-          <>
-            <td className="px-3 py-1.5">
-              <Entrada
-                value={email}
-                type="email"
-                aria-label={`Email de ${usuario.apellidoNombre}`}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </td>
-            <td className="px-3 py-1.5">
-              <Seleccion
-                value={sectorId ?? ""}
-                aria-label={`Sector por defecto de ${usuario.apellidoNombre}`}
-                onChange={(e) =>
-                  setSectorId(e.target.value ? Number(e.target.value) : null)
-                }
-              >
-                <option value="">(Sin definir)</option>
-                {sectores.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.nombre}
-                  </option>
-                ))}
-              </Seleccion>
-            </td>
-            <td className="px-3 py-1.5">
-              <input
-                type="checkbox"
-                aria-label={`${usuario.apellidoNombre} es GL`}
-                checked={esGl}
-                onChange={(e) => setEsGl(e.target.checked)}
-              />
-            </td>
-            <td className="px-3 py-1.5">
-              <input
-                type="checkbox"
-                aria-label={`${usuario.apellidoNombre} es administrador`}
-                checked={esAdmin}
-                disabled={esMiCuenta}
-                title={esMiCuenta ? "No puede quitarse su propio rol" : undefined}
-                onChange={(e) => setEsAdmin(e.target.checked)}
-              />
-            </td>
-            <td className="px-3 py-1.5">
-              <input
-                type="checkbox"
-                aria-label={`${usuario.apellidoNombre} activo`}
-                checked={activo}
-                disabled={esMiCuenta}
-                onChange={(e) => setActivo(e.target.checked)}
-              />
-            </td>
-          </>
-        )}
-
-        <td className="px-3 py-1.5">
-          <div className="flex flex-wrap items-center gap-2">
-            {sinCuenta ? (
-              <BotonFila
-                etiqueta="Crear cuenta"
-                onGuardar={async () => {
-                  const r = await crearUsuarioDeLegajo(usuario.legajo);
-                  if (r.ok) onCambio();
-                  return r;
-                }}
-              />
-            ) : (
-              <>
-                <BotonFila
-                  onGuardar={() =>
-                    actualizarUsuario({
-                      usuarioId: usuario.usuarioId!,
-                      email,
-                      sectorDefaultId: sectorId,
-                      esGl,
-                      esAdmin,
-                      activo,
-                    })
-                  }
-                />
-                <BotonFila
-                  etiqueta="Resetear clave"
-                  confirmar={`¿Restablecer la contraseña de ${usuario.apellidoNombre} a su número de legajo? Se cerrarán sus sesiones abiertas.`}
-                  onGuardar={() => resetearPasswordUsuario(usuario.usuarioId!)}
-                />
-                {usuario.debeCambiarPassword && (
-                  <span className="text-xs text-tinta-tenue">
-                    clave inicial pendiente
-                  </span>
-                )}
-              </>
-            )}
-            <Boton variante="secundario" onClick={() => setEditando((v) => !v)}>
-              {editando ? "Cerrar" : "Editar datos"}
-            </Boton>
-          </div>
-        </td>
-      </tr>
-
-      {editando && (
-        <FilaEdicionEmpleado
-          usuario={usuario}
-          sectores={sectores}
-          cargos={cargos}
-          turnos={turnos}
-          esMiCuenta={esMiCuenta}
-          onCambio={onCambio}
-          onResultado={onResultado}
-        />
+      ) : (
+        <>
+          <td className="px-3 py-1.5">
+            {usuario.email ?? <span className="text-tinta-tenue">—</span>}
+          </td>
+          <td className="px-3 py-1.5">{usuario.sectorNombre}</td>
+          {/* Los checks quedan deshabilitados en vez de reemplazarse por un
+              simbolo: asi conservan su rol accesible y su etiqueta, que es de
+              lo que se agarran las pruebas y los lectores de pantalla. */}
+          <td className="px-3 py-1.5">
+            <input
+              type="checkbox"
+              aria-label={`${usuario.apellidoNombre} es GL`}
+              checked={usuario.esGl}
+              disabled
+              readOnly
+            />
+          </td>
+          <td className="px-3 py-1.5">
+            <input
+              type="checkbox"
+              aria-label={`${usuario.apellidoNombre} es administrador`}
+              checked={usuario.esAdmin}
+              disabled
+              readOnly
+            />
+          </td>
+          <td className="px-3 py-1.5">
+            <input
+              type="checkbox"
+              aria-label={`${usuario.apellidoNombre} activo`}
+              checked={usuario.activo}
+              disabled
+              readOnly
+            />
+          </td>
+        </>
       )}
-    </>
+
+      <td className="px-3 py-1.5">
+        <div className="flex flex-wrap items-center gap-2">
+          {sinCuenta ? (
+            <BotonFila
+              etiqueta="Crear cuenta"
+              onGuardar={async () => {
+                const r = await crearUsuarioDeLegajo(usuario.legajo);
+                if (r.ok) onCambio();
+                return r;
+              }}
+            />
+          ) : (
+            <>
+              <BotonFila
+                etiqueta="Resetear clave"
+                confirmar={`¿Restablecer la contraseña de ${usuario.apellidoNombre} a su número de legajo? Se cerrarán sus sesiones abiertas.`}
+                onGuardar={() => resetearPasswordUsuario(usuario.usuarioId!)}
+              />
+              {usuario.debeCambiarPassword && (
+                <span className="text-xs text-tinta-tenue">
+                  clave inicial pendiente
+                </span>
+              )}
+            </>
+          )}
+          <Boton variante="secundario" onClick={onEditar}>
+            Editar datos
+          </Boton>
+        </div>
+      </td>
+    </tr>
   );
 }
 
 /**
- * Datos de la nomina (no de la cuenta): nombre, sector, cargo y turno.
+ * El unico formulario de la persona: nomina y cuenta juntas.
  *
- * Va en una fila aparte y no como columnas nuevas porque la grilla ya tiene
- * ocho y un ancho minimo de 1100px.
+ * Va en un modal y no desplegado dentro de la grilla porque el panel inline
+ * empujaba las filas y, con 800 personas y scroll interno, la fila que estabas
+ * editando se perdia de vista y despues habia que buscarla para cerrarla.
+ *
+ * De regalo, la exclusividad sale gratis: con el modal abierto no hay otra
+ * fila que tocar, asi que no hace falta deshabilitar nada.
+ *
+ * Dos advertencias sobre los campos:
+ *
+ *  - "Sector" y "Sector por defecto" NO son lo mismo. El primero es el de la
+ *    nomina (donde trabaja) y el segundo el que se le precarga a esta persona
+ *    cuando arma un pedido. Se ven parecidos y no lo son.
+ *  - "Activo" es la baja: apaga la nomina Y la cuenta. Al desmarcarlo la
+ *    persona sale de la grilla y del buscador de personal.
  */
-function FilaEdicionEmpleado({
+function ModalEdicionPersona({
   usuario,
   sectores,
   cargos,
   turnos,
   esMiCuenta,
-  onCambio,
-  onResultado,
+  onCerrar,
+  onGuardado,
 }: {
   usuario: FilaUsuario;
   sectores: Opcion[];
   cargos: OpcionCargo[];
   turnos: Opcion[];
   esMiCuenta: boolean;
-  onCambio: () => void;
-  onResultado: (resultado: Resultado) => void;
+  onCerrar: () => void;
+  onGuardado: (resultado: Resultado) => void;
 }) {
+  const [legajo, setLegajo] = useState(String(usuario.legajo));
   const [apellidoNombre, setApellidoNombre] = useState(usuario.apellidoNombre);
   const [sectorId, setSectorId] = useState(usuario.sectorId);
   const [cargoId, setCargoId] = useState(usuario.cargoId);
   const [turnoId, setTurnoId] = useState(usuario.turnoId);
+  const [email, setEmail] = useState(usuario.email ?? "");
+  const [sectorDefaultId, setSectorDefaultId] = useState(usuario.sectorDefaultId);
+  const [esGl, setEsGl] = useState(usuario.esGl);
+  const [esAdmin, setEsAdmin] = useState(usuario.esAdmin);
+  const [activo, setActivo] = useState(usuario.activo);
+
+  const id = (campo: string) => `edit-${campo}-${usuario.legajo}`;
 
   return (
-    <tr
-      data-testid={`empleado-edicion-${usuario.legajo}`}
-      className="border-b border-linea bg-lienzo/40 last:border-0"
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-tinta/40 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Editar a ${usuario.apellidoNombre}`}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onCerrar();
+      }}
+      // Solo el fondo cierra; un clic adentro no debe descartar lo cargado.
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCerrar();
+      }}
     >
-      <td colSpan={8} className="px-3 py-3">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div
+        data-testid={`empleado-edicion-${usuario.legajo}`}
+        className="my-auto w-full max-w-4xl rounded-lg border border-linea bg-panel p-5 shadow-lg"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold">{usuario.apellidoNombre}</h2>
+            <p className="mt-1 text-xs text-tinta-suave">
+              Legajo {usuario.legajo} · {usuario.cargoNombre}
+            </p>
+          </div>
+          <Boton variante="secundario" onClick={onCerrar}>
+            Cancelar
+          </Boton>
+        </div>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <CampoConEtiqueta
-            etiqueta="Apellido y nombre"
-            htmlFor={`edit-nombre-${usuario.legajo}`}
+            etiqueta="Legajo"
+            htmlFor={id("legajo")}
+            ayuda={
+              esMiCuenta
+                ? "No puede cambiar su propio legajo."
+                : "Lo siguen la cuenta y sus pedidos del historial."
+            }
           >
             <Entrada
-              id={`edit-nombre-${usuario.legajo}`}
+              id={id("legajo")}
+              type="number"
+              min={1}
+              value={legajo}
+              disabled={esMiCuenta}
+              onChange={(e) => setLegajo(e.target.value)}
+            />
+          </CampoConEtiqueta>
+
+          <CampoConEtiqueta etiqueta="Apellido y nombre" htmlFor={id("nombre")}>
+            <Entrada
+              id={id("nombre")}
               maxLength={150}
               value={apellidoNombre}
+              autoFocus
               onChange={(e) => setApellidoNombre(e.target.value)}
+            />
+          </CampoConEtiqueta>
+
+          <CampoConEtiqueta etiqueta="Email" htmlFor={id("email")}>
+            <Entrada
+              id={id("email")}
+              type="email"
+              maxLength={200}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
             />
           </CampoConEtiqueta>
 
           <CampoConEtiqueta
             etiqueta="Sector"
-            htmlFor={`edit-sector-${usuario.legajo}`}
+            htmlFor={id("sector")}
+            ayuda="Dónde trabaja, en la nómina."
           >
             <Seleccion
-              id={`edit-sector-${usuario.legajo}`}
+              id={id("sector")}
               value={sectorId ?? ""}
               onChange={(e) =>
                 setSectorId(e.target.value ? Number(e.target.value) : null)
@@ -710,11 +748,29 @@ function FilaEdicionEmpleado({
           </CampoConEtiqueta>
 
           <CampoConEtiqueta
-            etiqueta="Cargo"
-            htmlFor={`edit-cargo-${usuario.legajo}`}
+            etiqueta="Sector por defecto"
+            htmlFor={id("sector-defecto")}
+            ayuda="El que se le precarga al armar un pedido."
           >
             <Seleccion
-              id={`edit-cargo-${usuario.legajo}`}
+              id={id("sector-defecto")}
+              value={sectorDefaultId ?? ""}
+              onChange={(e) =>
+                setSectorDefaultId(e.target.value ? Number(e.target.value) : null)
+              }
+            >
+              <option value="">(Sin definir)</option>
+              {sectores.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.nombre}
+                </option>
+              ))}
+            </Seleccion>
+          </CampoConEtiqueta>
+
+          <CampoConEtiqueta etiqueta="Cargo" htmlFor={id("cargo")}>
+            <Seleccion
+              id={id("cargo")}
               value={cargoId ?? ""}
               onChange={(e) =>
                 setCargoId(e.target.value ? Number(e.target.value) : null)
@@ -729,12 +785,9 @@ function FilaEdicionEmpleado({
             </Seleccion>
           </CampoConEtiqueta>
 
-          <CampoConEtiqueta
-            etiqueta="Turno"
-            htmlFor={`edit-turno-${usuario.legajo}`}
-          >
+          <CampoConEtiqueta etiqueta="Turno" htmlFor={id("turno")}>
             <Seleccion
-              id={`edit-turno-${usuario.legajo}`}
+              id={id("turno")}
               value={turnoId ?? ""}
               onChange={(e) =>
                 setTurnoId(e.target.value ? Number(e.target.value) : null)
@@ -750,40 +803,78 @@ function FilaEdicionEmpleado({
           </CampoConEtiqueta>
         </div>
 
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="mt-3 flex flex-wrap items-center gap-4 border-t border-linea pt-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              aria-label={`${usuario.apellidoNombre} es GL`}
+              checked={esGl}
+              onChange={(e) => setEsGl(e.target.checked)}
+            />
+            Puede pedir viandas (GL)
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              aria-label={`${usuario.apellidoNombre} es administrador`}
+              checked={esAdmin}
+              disabled={esMiCuenta}
+              title={esMiCuenta ? "No puede quitarse su propio rol" : undefined}
+              onChange={(e) => setEsAdmin(e.target.checked)}
+            />
+            Administrador
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              aria-label={`${usuario.apellidoNombre} activo`}
+              checked={activo}
+              disabled={esMiCuenta}
+              onChange={(e) => {
+                // Desmarcarlo es la baja: se avisa acá y no al guardar, para
+                // que quien lo destildó sin querer lo note en el momento.
+                if (
+                  !e.target.checked &&
+                  !window.confirm(
+                    `¿Dar de baja a ${usuario.apellidoNombre}? Deja de aparecer en el buscador de personal y su cuenta se desactiva. El historial de pedidos se conserva.`,
+                  )
+                ) {
+                  return;
+                }
+                setActivo(e.target.checked);
+              }}
+            />
+            Activo (en la nómina y con la cuenta habilitada)
+          </label>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-linea pt-4">
           <BotonFila
             etiqueta="Guardar datos"
             onGuardar={async () => {
-              const r = await actualizarEmpleadoAccion({
-                legajo: usuario.legajo,
+              const r = await actualizarPersonaAccion({
+                legajoActual: usuario.legajo,
+                legajo,
                 apellidoNombre,
                 sectorId,
                 cargoId,
                 turnoId,
+                email,
+                sectorDefaultId,
+                esGl,
+                esAdmin,
+                activo,
               });
-              // El panel queda abierto a proposito: al cerrarlo se desmontaria
-              // el aviso del boton y nadie veria la confirmacion.
-              if (r.ok) onCambio();
+              // Al salir bien el modal se cierra, asi que el aviso del propio
+              // boton se desmontaria con el: el mensaje lo muestra el panel de
+              // arriba de la grilla, que siempre esta. Los errores, en cambio,
+              // se quedan acá, al lado del formulario que hay que corregir.
+              if (r.ok) onGuardado(r);
               return r;
             }}
           />
-          {!esMiCuenta && (
-            <BotonFila
-              etiqueta="Dar de baja"
-              variante="peligro"
-              confirmar={`¿Dar de baja a ${usuario.apellidoNombre}? Deja de aparecer en el buscador de personal y su cuenta se desactiva. El historial de pedidos se conserva.`}
-              onGuardar={async () => {
-                const r = await cambiarActivoEmpleadoAccion(usuario.legajo, false);
-                if (r.ok) {
-                  onResultado(r);
-                  onCambio();
-                }
-                return r;
-              }}
-            />
-          )}
         </div>
-      </td>
-    </tr>
+      </div>
+    </div>
   );
 }
